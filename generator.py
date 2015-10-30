@@ -1,4 +1,4 @@
-import os, time, logging
+import os, logging
 import struct, mmap
 import itertools
 
@@ -77,19 +77,25 @@ class Storage(object):
 
     def _reset_storage(self, loc):
         # assumes that the path exists but the file doesn't
-        # TODO: any way to make it better?
+        # https://stackoverflow.com/questions/33436787/how-to-efficiently-allocate-a-file-of-predefined-size-and-fill-it-with-a-non-zer
 
         fill = b'\xFF'
-        logging.info("Creating a new table at %s for %d entries (%d bytes). Initial value: %r." %
-                     (loc.path, loc.size, loc.size * bytes_per_entry, fill))
+        logging.info("Creating a new table at %s for %d entries (%d bytes)" %
+                     (loc.path, loc.size, loc.size * bytes_per_entry))
+
+        file_size = loc.size * bytes_per_entry
+        block_size = 2**14
+
+        assert file_size % block_size == 0
+
+        fill_str = fill * (2**14)
+        fill_iter = file_size // (2**14)
 
         self.curr_action = 1
         self.curr_path = loc.path
 
         with open(loc.path, 'wb') as f:
-            # size in bytes
-            for _ in range(loc.size * bytes_per_entry):
-                f.write(fill)
+            f.writelines(itertools.repeat(fill_str, fill_iter))
 
         self.curr_action = None
         self.curr_path = None
@@ -113,7 +119,7 @@ class Storage(object):
         assert loc.path not in self.storage_handles
 
         fileobj = open(loc.path, 'r+b')
-        mmapobj = mmap.mmap(fileobj.fileno(), loc.size)
+        mmapobj = mmap.mmap(fileobj.fileno(), loc.size * bytes_per_entry)
 
         self.storage_handles[loc.path] = Handle(fileobj, mmapobj)
 
@@ -155,6 +161,7 @@ class Storage(object):
         self._ensure_initialized(loc)
         byte_offset = loc.offset * bytes_per_entry
         prob_bin = self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry]
+        assert len(prob_bin) == 2
 
         prob_int = struct.unpack(prob_format, prob_bin)[0]
         if prob_int > prob_max:
@@ -169,12 +176,12 @@ class Storage(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.curr_action is not None:
             logging.warning("Generator was interrupted while doing I/O.")
-            if self.curr_action == 0 and self.curr_path is not None and os.path.exists(self.curr_path):
+            if self.curr_action == 1 and self.curr_path is not None and os.path.exists(self.curr_path):
                 # The 2nd and 3rd checks are necessary because the exit could occur
                 # after I set the flag `curr_action`, but before I set the other values or start I/O.
                 # Cleanup: remove half-created file.
                 os.remove(self.curr_path)
-            elif (self.curr_action == 1 and self.curr_path is not None and
+            elif (self.curr_action == 0 and self.curr_path is not None and
                           self.curr_value is not None and self.curr_offset is not None):
                 # Cleanup: write down that value
                 self.storage_handles[self.curr_path].mmapobj[self.curr_offset:self.curr_offset+bytes_per_entry] = self.curr_value
