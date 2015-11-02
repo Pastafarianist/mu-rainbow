@@ -2,7 +2,8 @@ import os, logging
 import struct, mmap
 import itertools
 
-from utils import *
+from gamecalc import hands5, hands5_rev, compactify_deck, expand_deck, canonicalize, winning_probability
+from utils import load, State, Location, Handle
 
 logging.basicConfig(level=logging.DEBUG, format='[%(asctime)-15s] %(levelname)s: %(message)s')
 
@@ -18,12 +19,6 @@ allocation_path = os.path.join(data_dir, allocation_filename)
 bytes_per_entry = 2
 prob_format = '>H'
 prob_max = 65534
-
-hands5 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 5)]
-hands5_rev = {v : i for i, v in enumerate(hands5)}
-
-hands4 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 4)]
-hands3 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 3)]
 
 
 class Storage(object):
@@ -73,11 +68,12 @@ class Storage(object):
         hand_idx = hands5_rev[cstate.hand]
         hand_offset, hand_type = self.allocation[hand_idx]
         deck_offset = self.deck_offsets[hand_type][compactify_deck(cstate.hand, cstate.deck)]
-        return hand_offset + deck_offset
+        offset = hand_offset + deck_offset
+        return offset
 
     def _reset_storage(self, loc):
         # assumes that the path exists but the file doesn't
-        # https://stackoverflow.com/questions/33436787/how-to-efficiently-allocate-a-file-of-predefined-size-and-fill-it-with-a-non-zer
+        # http://stackoverflow.com/a/33436946/1214547
 
         fill = b'\xFF'
         logging.info("Creating a new table at %s for %d entries (%d bytes)" %
@@ -152,10 +148,8 @@ class Storage(object):
         self.curr_value = None
         self.curr_offset = None
 
-    def retrieve(self, state):
-        loc = self._get_location(state)
-
-        if not os.path.exists(loc.path):
+    def retrieve_direct(self, loc):
+        if loc.path not in self.storage_handles and not os.path.exists(loc.path):
             return None
 
         self._ensure_initialized(loc)
@@ -170,6 +164,11 @@ class Storage(object):
         else:
             return prob_int / prob_max
 
+    def retrieve(self, state):
+        loc = self._get_location(state)
+        return self.retrieve_direct(loc)
+
+
     def __enter__(self):
         return self
 
@@ -179,11 +178,12 @@ class Storage(object):
             if self.curr_action == 1 and self.curr_path is not None and os.path.exists(self.curr_path):
                 # The 2nd and 3rd checks are necessary because the exit could occur
                 # after I set the flag `curr_action`, but before I set the other values or start I/O.
-                # Cleanup: remove half-created file.
+                logging.info("Removing a half-created table at %s." % self.curr_path)
                 os.remove(self.curr_path)
             elif (self.curr_action == 0 and self.curr_path is not None and
                           self.curr_value is not None and self.curr_offset is not None):
                 # Cleanup: write down that value
+                logging.info("Flushing value %d at offset %d in %s." % (self.curr_value, self.curr_offset, self.curr_path))
                 self.storage_handles[self.curr_path].mmapobj[self.curr_offset:self.curr_offset+bytes_per_entry] = self.curr_value
 
         for handle in self.storage_handles.values():
@@ -191,80 +191,8 @@ class Storage(object):
             handle.fileobj.close()
 
 
-# (full hand as a bitmask) -> (list of Move objects)
-moves_cache = {hand : moves_from_hand(hand) for hand in hands5}
-def moves(state):
-    assert state.deck
-    return moves_cache[state.hand]
-
-def outcomes(state, move):
-    assert state.deck
-    assert state.hand & move.param == move.param
-    new_score = state.score + move.score_change
-    new_hand_partial = state.hand ^ move.param
-    result = []
-    if move.action == 0:
-        # remove
-        temp = state.deck
-        card = 0
-        while temp:
-            if temp & 1:
-                new_hand = new_hand_partial | (1 << card)
-                new_deck = state.deck ^ (1 << card)
-                result.append(State(new_score, new_hand, new_deck))
-            card += 1
-            temp >>= 1
-    else:
-        # deal
-        # the slow part BEGINS
-        deck_list = binary_to_list(state.deck)
-        replenishment = min(len(deck_list), 3)
-        for combo in itertools.combinations(deck_list, replenishment):
-            mask = list_to_binary(combo)
-            new_hand = new_hand_partial | mask
-            new_deck = state.deck ^ mask
-            result.append(State(new_score, new_hand, new_deck))
-        # the slow part ENDS
-    return result
-
-score_change_cache = {hand: best_move_score(hand) for hand in itertools.chain(hands5, hands4, hands3)}
-def winning_probability(state, storage):
-    if state.score >= 40:
-        return 1.0
-    elif not state.deck:
-        # Here loading from disk cache will probably be slower than a direct calculation.
-        # Nevertheless, I want to abstain from hacky optimizations, so while I don't
-        # retrieve data from the cache, I still store it there.
-        if state.score < 30:
-            prob = 0.0
-        else:
-            score_change = score_change_cache[state.hand]
-            prob = 1.0 if state.score + score_change >= 40 else 0.0
-
-        if num_ones(state.hand) == 5:
-            # The disk cache only contains entries for full hands.
-            if storage.retrieve(state) is None:
-                storage.store(state, prob)
-
-        return prob
-    else:
-        prob = storage.retrieve(state)
-        if prob is None:
-            prob = 0.0
-            for move in moves(state):
-                total_prob = 0.0
-                num_outcomes = 0
-                for outcome in outcomes(state, move):
-                    next_prob = winning_probability(outcome, storage)
-                    total_prob += next_prob
-                    num_outcomes += 1
-                assert num_outcomes > 0
-                average_prob = total_prob / num_outcomes
-                prob = max(prob, average_prob)
-            storage.store(state, prob)
-        return prob
-
 def main():
+    logging.info("Starting.")
     with Storage(factorization_path, allocation_path) as storage:
         for i, hand in enumerate(hands5):
             for compact_deck in range(2**19):
