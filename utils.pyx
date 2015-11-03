@@ -1,5 +1,32 @@
-import json
+import json, logging
 from collections import namedtuple
+
+# ---------------- Bit operations ----------------
+
+cpdef int num_ones(int n):
+    cdef int res = 0
+    while n:
+        if n & 1:
+            res += 1
+        n >>= 1
+    return res
+
+cpdef int list_to_binary(alist):
+    cdef int res = 0
+    cdef int elem
+    for elem in alist:
+        res |= (1 << elem)
+    return res
+
+cpdef binary_to_list(int binary):
+    res = []
+    cdef int curr = 0
+    while binary:
+        if binary & 1:
+            res.append(curr)
+        curr += 1
+        binary >>= 1
+    return res
 
 # ---------------- Datatypes ----------------
 
@@ -37,32 +64,6 @@ def dump(obj, f):
 def load(f):
     return json.load(f)
 
-# ---------------- Bit operations ----------------
-
-def num_ones(n):
-    res = 0
-    while n:
-        if n & 1:
-            res += 1
-        n >>= 1
-    return res
-
-def list_to_binary(alist):
-    res = 0
-    for elem in alist:
-        res |= (1 << elem)
-    return res
-
-def binary_to_list(binary):
-    res = []
-    curr = 0
-    while binary:
-        if binary & 1:
-            res.append(curr)
-        curr += 1
-        binary >>= 1
-    return res
-
 # ---------------- Miscellaneous ----------------
 
 def to_base(a, base, zfill=None):
@@ -79,4 +80,3 @@ def to_base(a, base, zfill=None):
         return res
     else:
         return res.zfill(zfill)
-

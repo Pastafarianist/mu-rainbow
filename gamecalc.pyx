@@ -1,5 +1,8 @@
 import itertools
-from utils import State, Move, cardset_to_str, binary_to_list, list_to_binary, num_ones
+from utils import (
+    State, Move,
+    cardset_to_str, binary_to_list, list_to_binary, num_ones
+)
 
 # meanings of card numbers:
 # 0-7 = red cards 1-8
@@ -12,6 +15,61 @@ hands5_rev = {v : i for i, v in enumerate(hands5)}
 hands4 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 4)]
 hands3 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 3)]
 
+cpdef int expand_deck(int hand, int deck):
+    cdef int res = 0
+    cdef int i = 0
+    while deck:
+        if not (hand & 1):
+            res |= ((deck & 1) << i)
+            deck >>= 1
+        hand >>= 1
+        i += 1
+    return res
+
+cpdef int compactify_deck(int hand, int deck):
+    cdef int res = 0
+    cdef int i = 0
+    while deck:
+        if not (hand & 1):
+            res |= ((deck & 1) << i)
+            i += 1
+        else:
+            assert not (deck & 1)
+        deck >>= 1
+        hand >>= 1
+    return res
+
+cdef int[3] masks = ((1 << 8) - 1, ((1 << 8) - 1) << 8, ((1 << 8) - 1) << 16)
+
+cpdef int apply_permutation(int num, int p1, int p2, int p3):
+    return (
+        ((num & masks[p1]) >> (p1 * 8)) |
+        (((num & masks[p2]) >> (p2 * 8)) << 8) |
+        (((num & masks[p3]) >> (p3 * 8)) << 16)
+    )
+
+cdef int[5][3] permutations = [
+    (0, 2, 1),
+    (1, 0, 2),
+    (1, 2, 0),
+    (2, 0, 1),
+    (2, 1, 0)
+]
+
+def equiv_class(state):
+    yield (state.hand, state.deck)
+    for p1, p2, p3 in permutations:
+        yield (apply_permutation(state.hand, p1, p2, p3), apply_permutation(state.deck, p1, p2, p3))
+
+cpdef canonicalize(state):
+    cdef int chand = state.hand
+    cdef int cdeck = state.deck
+    cdef int nhand, ndeck, p1, p2, p3
+    for p1, p2, p3 in permutations:
+        nhand = apply_permutation(state.hand, p1, p2, p3)
+        ndeck = apply_permutation(state.deck, p1, p2, p3)
+        chand, cdeck = min((chand, cdeck), (nhand, ndeck))
+    return State(state.score, chand, cdeck)
 
 def are_valid_values(hand_values):
     for v in range(8):
@@ -39,55 +97,6 @@ def categorize_values(values):
             return 3  # 01233
     else:
         return 4  # 01234
-
-masks = ((1 << 8) - 1, ((1 << 8) - 1) << 8, ((1 << 8) - 1) << 16)
-
-def apply_permutation(num, perm):
-    return (
-        ((num & masks[perm[0]]) >> (perm[0] * 8)) |
-        (((num & masks[perm[1]]) >> (perm[1] * 8)) << 8) |
-        (((num & masks[perm[2]]) >> (perm[2] * 8)) << 16)
-    )
-
-permutations = (
-    (0, 2, 1),
-    (1, 0, 2),
-    (1, 2, 0),
-    (2, 0, 1),
-    (2, 1, 0)
-)
-def equiv_class(state):
-    yield (state.hand, state.deck)
-    for p in permutations:
-        yield (apply_permutation(state.hand, p), apply_permutation(state.deck, p))
-
-def canonicalize(state):
-    canonical = min(equiv_class(state))
-    return State(state.score, canonical[0], canonical[1])
-
-def expand_deck(hand, deck):
-    res = 0
-    i = 0
-    while deck:
-        if not (hand & 1):
-            res |= ((deck & 1) << i)
-            deck >>= 1
-        hand >>= 1
-        i += 1
-    return res
-
-def compactify_deck(hand, deck):
-    res = 0
-    i = 0
-    while deck:
-        if not (hand & 1):
-            res |= ((deck & 1) << i)
-            i += 1
-        else:
-            assert not (deck & 1)
-        deck >>= 1
-        hand >>= 1
-    return res
 
 def score_combination(combo):
     rem = sorted(v % 8 for v in combo)
@@ -185,7 +194,7 @@ def winning_probability(state, storage):
     elif not state.deck:
         # Here loading from disk cache will probably be slower than a direct calculation.
         # Nevertheless, I want to abstain from hacky optimizations, so while I don't
-        # retrieve data from the cache, I still store it there.
+        # use the data I retrieve from the cache, I still store it there.
         if state.score < 30:
             prob = 0.0
         else:
