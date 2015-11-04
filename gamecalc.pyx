@@ -56,11 +56,6 @@ cdef int[5][3] permutations = [
     (2, 1, 0)
 ]
 
-def equiv_class(state):
-    yield (state.hand, state.deck)
-    for p1, p2, p3 in permutations:
-        yield (apply_permutation(state.hand, p1, p2, p3), apply_permutation(state.deck, p1, p2, p3))
-
 cpdef canonicalize(state):
     cdef int chand = state.hand
     cdef int cdeck = state.deck
@@ -68,35 +63,17 @@ cpdef canonicalize(state):
     for p1, p2, p3 in permutations:
         nhand = apply_permutation(state.hand, p1, p2, p3)
         ndeck = apply_permutation(state.deck, p1, p2, p3)
-        chand, cdeck = min((chand, cdeck), (nhand, ndeck))
+        # The following `if` is simply this line unrolled:
+        # chand, cdeck = min((chand, cdeck), (nhand, ndeck))
+        if nhand < chand or (nhand == chand and ndeck < cdeck):
+            chand = nhand
+            cdeck = ndeck
     return State(state.score, chand, cdeck)
 
-def are_valid_values(hand_values):
-    for v in range(8):
-        if hand_values.count(v) > 3:
-            return False
-    return True
 
-def categorize_values(values):
-    val_cnt = [0] * 8
+hands5_factor = sorted(list({canonicalize(State(0, hand, 0)).hand for hand in hands5}))
+hands5_factor_rev = {hand : i for i, hand in enumerate(hands5_factor)}
 
-    for v in values:
-        val_cnt[v] += 1
-
-    val_cnt.sort(reverse=True)
-
-    if val_cnt[0] == 3:
-        if val_cnt[1] == 2:
-            return 0  # 00011
-        elif val_cnt[1] == 1:
-            return 1  # 00012
-    elif val_cnt[0] == 2:
-        if val_cnt[1] == 2:
-            return 2  # 01122
-        else:
-            return 3  # 01233
-    else:
-        return 4  # 01234
 
 def score_combination(combo):
     rem = sorted(v % 8 for v in combo)

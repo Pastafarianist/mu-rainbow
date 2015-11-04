@@ -1,41 +1,38 @@
 import os, logging
-import struct, mmap
+import struct, mmap, io
 import itertools
+from collections import Counter
 
-from gamecalc import hands5_rev, compactify_deck, canonicalize
-from utils import load, Location, Handle
+from gamecalc import compactify_deck, canonicalize, hands5_factor_rev
+from utils import Location, Handle, load, dump
 
 bytes_per_entry = 2
 prob_format = '>H'
 prob_max = 65534
+usage_filename = 'usage.json'
 
 
 class Storage(object):
-    def __init__(self, factorization_path, allocation_path, states_dir):
-        with open(factorization_path, 'r') as f:
-            factorization = load(f)
-            self.deck_offsets = []
-            for factor, _ in factorization:
-                l = [v for v in factor.values() if v is not None]
-                assert len(l) == 1
-                allowed_decks = l[0]
-                offsets = [0]
-                for b in allowed_decks:
-                    offsets.append(offsets[-1] + b)
-                self.deck_offsets.append(offsets)
-
-        with open(allocation_path, 'r') as f:
-            self.allocation = load(f)
-
+    def __init__(self, states_dir):
         self.states_dir = states_dir
         self.storage_handles = {}
+
+        self.usage_path = os.path.join(states_dir, usage_filename)
+        if os.path.exists(self.usage_path):
+            with open(self.usage_path, 'r') as f:
+                self.storage_usage = Counter(load(f))
+        else:
+            self.storage_usage = Counter()
+
+        # This is needed for determining when to dump storage_usage.
+        self.first_path = None
 
         # In case the generator is aborted, I want to do at least something to preserve consistency.
         # When I/O is performed, this variable stores the current I/O action.
         # There are 2 types of actions available: writing values in existing files and creating new files.
         # 0 = writing value
         # 1 = creating file
-        # God, I'm missing Haskell's algebraic data types.
+        # I'm missing Haskell's algebraic data types.
         self.curr_action = None
 
         self.curr_value = None
@@ -43,7 +40,6 @@ class Storage(object):
         self.curr_path = None
 
     def _get_directory(self, state):
-        # return os.path.join(data_dir, '%02d' % state.score)
         return self.states_dir
 
     @staticmethod
@@ -54,10 +50,9 @@ class Storage(object):
         return os.path.join(self._get_directory(state), self._get_filename(state))
 
     def _get_offset(self, cstate):
-        hand_idx = hands5_rev[cstate.hand]
-        hand_offset, hand_type = self.allocation[hand_idx]
-        deck_offset = self.deck_offsets[hand_type][compactify_deck(cstate.hand, cstate.deck)]
-        offset = hand_offset + deck_offset
+        hand_offset = hands5_factor_rev[cstate.hand]
+        deck_offset = compactify_deck(cstate.hand, cstate.deck)
+        offset = hand_offset * (1 << 19) + deck_offset
         return offset
 
     def _reset_storage(self, loc):
@@ -65,16 +60,15 @@ class Storage(object):
         # http://stackoverflow.com/a/33436946/1214547
 
         fill = b'\xFF'
-        logging.info("Creating a new table at %s for %d entries (%d bytes)" %
-                     (loc.path, loc.size, loc.size * bytes_per_entry))
-
         file_size = loc.size * bytes_per_entry
-        block_size = 2**14
-
+        block_size = io.DEFAULT_BUFFER_SIZE
         assert file_size % block_size == 0
 
-        fill_str = fill * (2**14)
-        fill_iter = file_size // (2**14)
+        logging.info("Creating a new table at %s for %d entries (%d bytes). Using block size of %d bytes." %
+                     (loc.path, loc.size, file_size, block_size))
+
+        fill_str = fill * block_size
+        fill_iter = file_size // block_size
 
         self.curr_action = 1
         self.curr_path = loc.path
@@ -112,7 +106,8 @@ class Storage(object):
         cstate = canonicalize(state)
         path = self._get_path(cstate)
         offset = self._get_offset(cstate)
-        size = 3715948544  # calculated in scratchpad.py
+        # 7448 is the number of hands after factorization
+        size = 7448 * 2**19
         return Location(path, offset, size)
 
     def store(self, state, prob):
@@ -121,6 +116,13 @@ class Storage(object):
         prob_bin = struct.pack(prob_format, prob_int)
 
         loc = self._get_location(state)
+        if self.first_path is None:
+            self.first_path = loc.path
+
+        # No values are supposed to be overwritten.
+        prob_int = self.retrieve_direct_raw(loc)
+        assert prob_int > prob_max  # means that the value is unused
+
         self._ensure_initialized(loc)
 
         byte_offset = loc.offset * bytes_per_entry
@@ -130,33 +132,48 @@ class Storage(object):
         self.curr_value = prob_bin
         self.curr_offset = byte_offset
 
+        # If the generator is interrupted between these two lines, it will end up in an inconsistent
+        # state. This is not serious, since the second line is only for monitoring progress, but
+        # how to mitigate it anyway?
         self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
+        self.storage_usage[loc.path] += 1  # Earlier we've checked that it is a new value.
 
-        self.curr_path = None
         self.curr_action = None
+        self.curr_path = None
         self.curr_value = None
         self.curr_offset = None
 
-    def retrieve_direct(self, loc):
-        if loc.path not in self.storage_handles and not os.path.exists(loc.path):
-            return None
+        # It remains to dump storage_usage from time to time.
+        # This will not save data when the usage is 0, because we've just incremented it to at least 1.
+        if self.storage_usage[self.first_path] % 1000000 == 0:
+            self.save_usage()
 
-        self._ensure_initialized(loc)
+    def retrieve_direct_raw(self, loc):
+        if loc.path not in self.storage_handles:
+            if not os.path.exists(loc.path):
+                return None
+            else:
+                self._ensure_initialized(loc)
+
         byte_offset = loc.offset * bytes_per_entry
         prob_bin = self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry]
         assert len(prob_bin) == 2
 
-        prob_int = struct.unpack(prob_format, prob_bin)[0]
+        return struct.unpack(prob_format, prob_bin)[0]
+
+    def retrieve(self, state):
+        loc = self._get_location(state)
+        prob_int = self.retrieve_direct_raw(loc)
         if prob_int > prob_max:
             # 65535
+            assert prob_int == prob_max + 1
             return None
         else:
             return prob_int / prob_max
 
-    def retrieve(self, state):
-        loc = self._get_location(state)
-        return self.retrieve_direct(loc)
-
+    def save_usage(self):
+        with open(self.usage_path, 'w') as f:
+            dump(self.storage_usage, f)
 
     def __enter__(self):
         return self
@@ -174,8 +191,10 @@ class Storage(object):
                 # Cleanup: write down that value
                 logging.info("Flushing value %d at offset %d in %s." % (self.curr_value, self.curr_offset, self.curr_path))
                 self.storage_handles[self.curr_path].mmapobj[self.curr_offset:self.curr_offset+bytes_per_entry] = self.curr_value
+                # At this point, we don't know whether storage_usage was updated or not, but this is not very important.
 
         for handle in self.storage_handles.values():
             handle.mmapobj.close()
-
             handle.fileobj.close()
+
+        self.save_usage()
