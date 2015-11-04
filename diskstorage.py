@@ -24,6 +24,12 @@ class Storage(object):
         else:
             self.storage_usage = Counter()
 
+        logging.info("Current storage usage: %r" % self.storage_usage)
+
+        self.path_cache = [
+            os.path.join(self.states_dir, '%02d.dat' % score) for score in range(40)
+        ]
+
         # This is needed for determining when to dump storage_usage.
         self.first_path = None
 
@@ -39,15 +45,8 @@ class Storage(object):
         self.curr_offset = None
         self.curr_path = None
 
-    def _get_directory(self, state):
-        return self.states_dir
-
-    @staticmethod
-    def _get_filename(state):
-        return '%02d.dat' % state.score
-
     def _get_path(self, state):
-        return os.path.join(self._get_directory(state), self._get_filename(state))
+        return self.path_cache[state.score]
 
     def _get_offset(self, cstate):
         hand_offset = hands5_factor_rev[cstate.hand]
@@ -146,12 +145,13 @@ class Storage(object):
         # It remains to dump storage_usage from time to time.
         # This will not save data when the usage is 0, because we've just incremented it to at least 1.
         if self.storage_usage[self.first_path] % 1000000 == 0:
+            logging.info("Current storage usage: %r" % self.storage_usage)
             self.save_usage()
 
     def retrieve_direct_raw(self, loc):
         if loc.path not in self.storage_handles:
             if not os.path.exists(loc.path):
-                return None
+                return prob_max + 1
             else:
                 self._ensure_initialized(loc)
 
@@ -192,6 +192,8 @@ class Storage(object):
                 logging.info("Flushing value %d at offset %d in %s." % (self.curr_value, self.curr_offset, self.curr_path))
                 self.storage_handles[self.curr_path].mmapobj[self.curr_offset:self.curr_offset+bytes_per_entry] = self.curr_value
                 # At this point, we don't know whether storage_usage was updated or not, but this is not very important.
+        else:
+            logging.info("Generator was interrupted.")
 
         for handle in self.storage_handles.values():
             handle.mmapobj.close()
