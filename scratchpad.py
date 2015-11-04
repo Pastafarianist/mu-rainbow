@@ -175,27 +175,41 @@ def calc_allocation():
         offsets.append(offsets[-1] + decks_per_hand)
         types.append(values_type)
 
-    last_offset = offsets.pop()
+    last_offset = offsets[-1]
     assert last_offset == total_size, (last_offset, total_size, last_offset - total_size)
 
+    types.append(None)
     allocation = list(zip(offsets, types))
 
     with open(gen.allocation_path, 'w') as f:
         dump(allocation, f)
 
+def calc_storage_use(path):
+    cnt = 0
+    time_start = time.time()
+    with gen.Storage(gen.factorization_path, gen.allocation_path) as storage:
+        for offset in range(3715948544):
+            if offset % 10000000 == 0 and offset > 0:
+                elapsed = time.time() - time_start
+                print("Processed %d / %d entries. So far, %d / %d = %.2f%% entries are used. %.2f seconds elapsed. %.2f seconds remaining." % 
+                    (offset, 3715948544, cnt, offset, (cnt / offset) * 100, elapsed, (elapsed / offset) * (3715948544 - offset)))
+            if storage.retrieve_direct_raw(gen.Location(path, offset, 3715948544)) is not None:
+                cnt += 1
+    print("Used %d / %d entries" % (cnt, 3715948544))
 
 if __name__ == '__main__':
     # calc_factorization()
-    calc_allocation()
+    # calc_allocation()
+    calc_storage_use('/home/pastafarianist/mu_roomy_states/39.dat')
 
-    print(len(hand_values_data_1))
-    print(len(hand_values_data_2))
+    # print(len(hand_values_data_1))
+    # print(len(hand_values_data_2))
 
-    for key in hand_values_data_1:
-        assert key in hand_values_data_2, key
+    # for key in hand_values_data_1:
+    #     assert key in hand_values_data_2, key
 
-    for key in hand_values_data_2:
-        assert key in hand_values_data_1, key
+    # for key in hand_values_data_2:
+    #     assert key in hand_values_data_1, key
 
-    for key in hand_values_data_1:
-        assert hand_values_data_1[key] == hand_values_data_2[key], (key, hand_values_data_1[key], hand_values_data_2[key])
+    # for key in hand_values_data_1:
+    #     assert hand_values_data_1[key] == hand_values_data_2[key], (key, hand_values_data_1[key], hand_values_data_2[key])
