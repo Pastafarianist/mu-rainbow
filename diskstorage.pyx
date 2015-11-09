@@ -124,10 +124,11 @@ class Storage(object):
 
         byte_offset = loc.offset * bytes_per_entry
 
-        self.curr_action = 0
         self.curr_path = loc.path
         self.curr_value = prob_bin
         self.curr_offset = byte_offset
+        # Now that everything is copied in the memory, we may flag that we're performing I/O.
+        self.curr_action = 0
 
         # If the generator is interrupted somewhere within these lines, it will end up in an inconsistent
         # state. This is not serious, since the second line is only for monitoring progress, but

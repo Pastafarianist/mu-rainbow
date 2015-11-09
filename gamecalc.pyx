@@ -73,19 +73,20 @@ cdef inline int apply_permutation(int num, int p1, int p2, int p3) except -1:
         (((num & masks[p3]) >> (p3 * 8)) << 16)
     )
 
-cdef int[5][3] permutations = [
-    (0, 2, 1),
-    (1, 0, 2),
-    (1, 2, 0),
-    (2, 0, 1),
-    (2, 1, 0)
+cdef int[15] permutations = [
+    0, 2, 1,
+    1, 0, 2,
+    1, 2, 0,
+    2, 0, 1,
+    2, 1, 0
 ]
 
 cpdef State canonicalize(State state):
     cdef int chand = state.hand
     cdef int cdeck = state.deck
-    cdef int nhand, ndeck, p1, p2, p3
-    for p1, p2, p3 in permutations:
+    cdef int nhand, ndeck, i, p1, p2, p3
+    for i in range(0, 15, 3):
+        p1, p2, p3 = permutations[i], permutations[i + 1], permutations[i + 2]
         nhand = apply_permutation(state.hand, p1, p2, p3)
         ndeck = apply_permutation(state.deck, p1, p2, p3)
         # The following `if` is simply this line unrolled:

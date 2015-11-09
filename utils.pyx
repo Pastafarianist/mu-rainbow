@@ -5,7 +5,7 @@ from collections import namedtuple
 
 # ---------------- Bit operations ----------------
 
-cdef int num_ones(int n) except -1:
+cpdef int num_ones(int n) except -1:
     cdef int res = 0
     while n:
         if n & 1:
@@ -13,14 +13,14 @@ cdef int num_ones(int n) except -1:
         n >>= 1
     return res
 
-cdef int list_to_binary(alist) except -1:
+cpdef int list_to_binary(alist) except -1:
     cdef int res = 0
     cdef int elem
     for elem in alist:
         res |= (1 << elem)
     return res
 
-cdef binary_to_list(int binary):
+cpdef binary_to_list(int binary):
     res = []
     cdef int curr = 0
     while binary:
