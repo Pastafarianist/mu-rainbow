@@ -10,6 +10,7 @@ bytes_per_entry = 2
 prob_format = '>H'
 prob_max = 65534
 usage_filename = 'usage.json'
+usage_total_key = 'total'
 
 
 class Storage(object):
@@ -29,9 +30,6 @@ class Storage(object):
         self.path_cache = [
             os.path.join(self.states_dir, '%02d.dat' % score) for score in range(40)
         ]
-
-        # This is needed for determining when to dump storage_usage.
-        self.first_path = None
 
         # In case the generator is aborted, I want to do at least something to preserve consistency.
         # When I/O is performed, this variable stores the current I/O action.
@@ -115,8 +113,6 @@ class Storage(object):
         prob_bin = struct.pack(prob_format, prob_int)
 
         loc = self._get_location(state)
-        if self.first_path is None:
-            self.first_path = loc.path
 
         # No values are supposed to be overwritten.
         prob_int = self.retrieve_direct_raw(loc)
@@ -131,20 +127,19 @@ class Storage(object):
         self.curr_value = prob_bin
         self.curr_offset = byte_offset
 
-        # If the generator is interrupted between these two lines, it will end up in an inconsistent
+        # If the generator is interrupted somewhere within these lines, it will end up in an inconsistent
         # state. This is not serious, since the second line is only for monitoring progress, but
         # how to mitigate it anyway?
         self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
         self.storage_usage[loc.path] += 1  # Earlier we've checked that it is a new value.
+        self.storage_usage[usage_total_key] += 1
 
         self.curr_action = None
         self.curr_path = None
         self.curr_value = None
         self.curr_offset = None
 
-        # It remains to dump storage_usage from time to time.
-        # This will not save data when the usage is 0, because we've just incremented it to at least 1.
-        if self.storage_usage[self.first_path] % 1000000 == 0:
+        if self.storage_usage[usage_total_key] % 1000000 == 0:
             logging.info("Current storage usage: %r" % self.storage_usage)
             self.save_usage()
 

@@ -1,9 +1,11 @@
-import json, logging
+# cython: profile=True
+
+import json
 from collections import namedtuple
 
 # ---------------- Bit operations ----------------
 
-cpdef int num_ones(int n):
+cpdef int num_ones(int n) except -1:
     cdef int res = 0
     while n:
         if n & 1:
@@ -11,7 +13,7 @@ cpdef int num_ones(int n):
         n >>= 1
     return res
 
-cpdef int list_to_binary(alist):
+cpdef int list_to_binary(alist) except -1:
     cdef int res = 0
     cdef int elem
     for elem in alist:

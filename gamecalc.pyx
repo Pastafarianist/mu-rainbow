@@ -1,3 +1,5 @@
+# cython: profile=True
+
 import itertools
 from utils import (
     State, Move,
@@ -15,7 +17,7 @@ hands5_rev = {v : i for i, v in enumerate(hands5)}
 hands4 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 4)]
 hands3 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 3)]
 
-cpdef int expand_deck(int hand, int deck):
+cpdef int expand_deck(int hand, int deck) except -1:
     cdef int res = 0
     cdef int i = 0
     while deck:
@@ -26,7 +28,7 @@ cpdef int expand_deck(int hand, int deck):
         i += 1
     return res
 
-cpdef int compactify_deck(int hand, int deck):
+cpdef int compactify_deck(int hand, int deck) except -1:
     cdef int res = 0
     cdef int i = 0
     while deck:
@@ -41,7 +43,7 @@ cpdef int compactify_deck(int hand, int deck):
 
 cdef int[3] masks = ((1 << 8) - 1, ((1 << 8) - 1) << 8, ((1 << 8) - 1) << 16)
 
-cpdef int apply_permutation(int num, int p1, int p2, int p3):
+cdef inline int apply_permutation(int num, int p1, int p2, int p3) except -1:
     return (
         ((num & masks[p1]) >> (p1 * 8)) |
         (((num & masks[p2]) >> (p2 * 8)) << 8) |
@@ -130,11 +132,14 @@ def best_move_score(hand):
 
 # (full hand as a bitmask) -> (list of Move objects)
 moves_cache = {hand : moves_from_hand(hand) for hand in hands5}
-def moves(state):
+cdef moves(state):
     assert state.deck
     return moves_cache[state.hand]
 
-def outcomes(state, move):
+cdef outcomes(state, move):
+    cdef int new_score, new_hand_partial, new_hand, new_deck
+    cdef int temp, card
+    cdef int mask, replenishment
     assert state.deck, state
     assert state.hand & move.param == move.param, (state, move)
     new_score = state.score + move.score_change
@@ -165,7 +170,9 @@ def outcomes(state, move):
     return result
 
 score_change_cache = {hand: best_move_score(hand) for hand in itertools.chain(hands5, hands4, hands3)}
-def winning_probability(state, storage):
+cpdef double winning_probability(state, storage) except -1.0:
+    cdef int score_change, num_outcomes
+    cdef double prob, total_prob, next_prob, average_prob
     if state.score >= 40:
         return 1.0
     elif not state.deck:
@@ -185,8 +192,8 @@ def winning_probability(state, storage):
 
         return prob
     else:
-        prob = storage.retrieve(state)
-        if prob is None:
+        sprob = storage.retrieve(state)
+        if sprob is None:
             prob = 0.0
             for move in moves(state):
                 total_prob = 0.0
@@ -199,4 +206,6 @@ def winning_probability(state, storage):
                 average_prob = total_prob / num_outcomes
                 prob = max(prob, average_prob)
             storage.store(state, prob)
+        else:
+            prob = sprob
         return prob
