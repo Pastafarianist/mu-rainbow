@@ -1,21 +1,42 @@
 # cython: profile=True
 
 import itertools
-from utils import (
-    State, Move,
-    cardset_to_str, binary_to_list, list_to_binary, num_ones
-)
+from utils import cardset_to_str, binary_to_list, list_to_binary, num_ones
 
 # meanings of card numbers:
 # 0-7 = red cards 1-8
 # 8-15 = blue cards 1-8
 # 16-24 = yellow cards 1-8
 
+# ---------------- Datatypes ----------------
+
+# 0..39, bitmask of length 24, bitmask of length 24
+# State = namedtuple("State", "score hand deck")
+cdef class State:
+    cdef readonly int score, hand, deck
+    def __init__(self, score, hand, deck):
+        self.score = score
+        self.hand = hand
+        self.deck = deck
+
+# 0/1 (remove/deal), bitmask of selected cards, int
+# Move = namedtuple("Move", "action param score_change")
+cdef class Move:
+    cdef readonly int action, param, score_change
+    def __init__(self, action, param, score_change):
+        self.action = action
+        self.param = param
+        self.score_change = score_change
+
+# ---------------- Cached simple stuff ----------------
+
 hands5 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 5)]
 hands5_rev = {v : i for i, v in enumerate(hands5)}
 
 hands4 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 4)]
 hands3 = [list_to_binary(combo) for combo in itertools.combinations(range(24), 3)]
+
+# ---------------- Deck manipulations ----------------
 
 cpdef int expand_deck(int hand, int deck) except -1:
     cdef int res = 0
@@ -41,6 +62,8 @@ cpdef int compactify_deck(int hand, int deck) except -1:
         hand >>= 1
     return res
 
+# ---------------- State factorization ----------------
+
 cdef int[3] masks = ((1 << 8) - 1, ((1 << 8) - 1) << 8, ((1 << 8) - 1) << 16)
 
 cdef inline int apply_permutation(int num, int p1, int p2, int p3) except -1:
@@ -58,7 +81,7 @@ cdef int[5][3] permutations = [
     (2, 1, 0)
 ]
 
-cpdef canonicalize(state):
+cpdef State canonicalize(State state):
     cdef int chand = state.hand
     cdef int cdeck = state.deck
     cdef int nhand, ndeck, p1, p2, p3
@@ -76,6 +99,7 @@ cpdef canonicalize(state):
 hands5_factor = sorted(list({canonicalize(State(0, hand, 0)).hand for hand in hands5}))
 hands5_factor_rev = {hand : i for i, hand in enumerate(hands5_factor)}
 
+# ---------------- Scoring ----------------
 
 def score_combination(combo):
     rem = sorted(v % 8 for v in combo)
@@ -116,6 +140,8 @@ def card_combinations(hand):
             combo = (v + colors[0] * 8, v + colors[1] * 8, v + colors[2] * 8)
             assert score_combination(combo) == score, 'combo: %r, score: %d, score_combination(combo): %d' % (combo, score, score_combination(combo))
             yield score, combo
+
+# ---------------- Game moves ----------------
 
 def moves_from_hand(hand):
     hand_as_list = binary_to_list(hand)
@@ -168,6 +194,8 @@ cdef outcomes(state, move):
             result.append(State(new_score, new_hand, new_deck))
         # the slow part ENDS
     return result
+
+# ---------------- DP solution ----------------
 
 score_change_cache = {hand: best_move_score(hand) for hand in itertools.chain(hands5, hands4, hands3)}
 cpdef double winning_probability(state, storage) except -1.0:

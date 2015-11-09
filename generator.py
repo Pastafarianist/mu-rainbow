@@ -5,8 +5,7 @@ import pyximport
 pyximport.install()
 
 from diskstorage import Storage
-from gamecalc import hands5, expand_deck, winning_probability
-from utils import State
+from gamecalc import State, hands5, expand_deck, winning_probability
 
 
 states_dir = '/home/pastafarianist/mu_roomy_states'

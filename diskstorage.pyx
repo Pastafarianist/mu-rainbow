@@ -1,3 +1,5 @@
+# cython: profile=True
+
 import os, logging
 import struct, mmap, io
 import itertools
@@ -140,7 +142,7 @@ class Storage(object):
         self.curr_offset = None
 
         if self.storage_usage[usage_total_key] % 1000000 == 0:
-            logging.info("Current storage usage: %r" % self.storage_usage)
+            logging.info("Currently using %d entries in the table" % self.storage_usage[usage_total_key])
             self.save_usage()
 
     def retrieve_direct_raw(self, loc):

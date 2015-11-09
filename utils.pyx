@@ -5,7 +5,7 @@ from collections import namedtuple
 
 # ---------------- Bit operations ----------------
 
-cpdef int num_ones(int n) except -1:
+cdef int num_ones(int n) except -1:
     cdef int res = 0
     while n:
         if n & 1:
@@ -13,14 +13,14 @@ cpdef int num_ones(int n) except -1:
         n >>= 1
     return res
 
-cpdef int list_to_binary(alist) except -1:
+cdef int list_to_binary(alist) except -1:
     cdef int res = 0
     cdef int elem
     for elem in alist:
         res |= (1 << elem)
     return res
 
-cpdef binary_to_list(int binary):
+cdef binary_to_list(int binary):
     res = []
     cdef int curr = 0
     while binary:
@@ -32,12 +32,9 @@ cpdef binary_to_list(int binary):
 
 # ---------------- Datatypes ----------------
 
-# 0..39, bitmask of length 24, bitmask of length 24
-State = namedtuple("State", "score hand deck")
-# 0/1 (remove/deal), bitmask of selected cards, int
-Move = namedtuple("Move", "action param score_change")
 # absolute or relative path, offset in total bytes / bytes per record, size in total bytes / bytes per record
 Location = namedtuple("Location", "path offset size")
+
 Handle = namedtuple("Handle", "fileobj mmapobj")
 
 # ---------------- Prettification ----------------
@@ -48,15 +45,6 @@ def card_to_str(card):
 
 def cardset_to_str(hand):
     return ', '.join(card_to_str(card) for card in binary_to_list(hand))
-
-def state_to_str(state):
-    if isinstance(state, State):
-        return str(State(state.score, cardset_to_str(state.hand), cardset_to_str(state.deck)))
-    elif isinstance(state, tuple):
-        assert len(state) == 2
-        return (cardset_to_str(state[0]), cardset_to_str(state[1]))
-    else:
-        raise TypeError("Unrecognized type: %s" % type(state))
 
 # ---------------- Persistence and caching ----------------
 
