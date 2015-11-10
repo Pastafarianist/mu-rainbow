@@ -5,7 +5,7 @@ import pyximport
 pyximport.install()
 
 from diskstorage import Storage
-from gamecalc import State, hands5, expand_deck, winning_probability
+from utils import State, hands5, expand_deck, winning_probability
 
 
 states_dir = '/home/pastafarianist/mu_roomy_states'
@@ -17,7 +17,7 @@ def main():
         for i, hand in enumerate(hands5):
             for compact_deck in range(2**19):
                 deck = expand_deck(hand, compact_deck)
-                state = State(39, hand, deck)
+                state = State(0, hand, deck)
                 winning_probability(state, storage)
             logging.info("%d/%d hands processed." % (i + 1, len(hands5)))
 
