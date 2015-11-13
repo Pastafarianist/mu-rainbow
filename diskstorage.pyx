@@ -13,7 +13,7 @@ prob_format = '>H'
 prob_range = 65534
 usage_filename = 'usage.json'
 usage_total_key = 'total'
-report_period = 1000000
+report_period = 100000
 
 cdef class Storage:
     cdef str states_dir, usage_path, curr_path, last_path
@@ -34,7 +34,8 @@ cdef class Storage:
         else:
             self.storage_usage = Counter()
 
-        logging.info("Current storage usage: %r" % self.storage_usage)
+        logging.info("Currently using %d entries in the table" % self.storage_usage[usage_total_key])
+        self.report_breakdown()
 
         self.path_cache = [
             os.path.join(self.states_dir, '%02d.dat' % score) for score in range(40)
@@ -61,7 +62,7 @@ cdef class Storage:
     cdef _get_path(self, State state):
         return self.path_cache[state.score]
 
-    cdef long _get_offset(self, State cstate):
+    cdef long _get_offset(self, State cstate) except -1:
         cdef long hand_offset, deck_offset, offset
         hand_offset = hands5_factor_rev[cstate.hand]
         deck_offset = compactify_deck(cstate.hand, cstate.deck)
@@ -114,11 +115,12 @@ cdef class Storage:
             # According to http://linux.die.net/man/2/posix_fadvise , len=0 (3rd argument)
             # indicates the intention to access the whole file.
             if self.last_path is not None:
-                logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
+                # logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
                 os.posix_fadvise(self.storage_handles[self.last_path].fileobj.fileno(),
                                  0, 0, os.POSIX_FADV_DONTNEED)
             else:
-                logging.debug("Telling the kernel that %s will be used henceforth..." % loc.path)
+                # logging.debug("Telling the kernel that %s will be used henceforth..." % loc.path)
+                pass
             os.posix_fadvise(self.storage_handles[loc.path].fileobj.fileno(),
                              0, 0, os.POSIX_FADV_WILLNEED)
             self.last_path = loc.path
@@ -204,6 +206,11 @@ cdef class Storage:
         with open(self.usage_path, 'w') as f:
             dump(self.storage_usage, f)
 
+    cdef report_breakdown(self):
+        logging.info("Usage breakdown: \n%s" %
+                     '\n'.join('    %s: %d' % (key, value)
+                               for key, value in sorted(self.storage_usage.items())))
+
     def __enter__(self):
         return self
 
@@ -229,3 +236,4 @@ cdef class Storage:
             handle.fileobj.close()
 
         self.report_and_save_usage()
+        self.report_breakdown()
