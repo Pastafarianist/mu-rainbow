@@ -178,7 +178,7 @@ def card_combinations(hand):
 def moves_from_hand(hand):
     hand_as_list = binary_to_list(hand)
     remove_moves = [Move(0, (1 << i), 0) for i in hand_as_list]
-    deal_moves = [Move(1, list_to_binary(combo), score) for score, combo in card_combinations(hand_as_list)]
+    deal_moves = [Move(1, list_to_binary(combo), score // 10) for score, combo in card_combinations(hand_as_list)]
     return remove_moves + deal_moves
 
 def best_move_score(hand):

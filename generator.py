@@ -15,10 +15,10 @@ def main():
     logging.info("Starting.")
     with Storage(states_dir) as storage:
         for i, hand in enumerate(hands5):
-            for compact_deck in range(2**19):
-                deck = expand_deck(hand, compact_deck)
-                state = State(0, hand, deck)
-                winning_probability(state, storage)
+            compact_deck = (1 << 19) - 1
+            deck = expand_deck(hand, compact_deck)
+            state = State(0, hand, deck)
+            winning_probability(state, storage)
             logging.info("%d/%d hands processed." % (i + 1, len(hands5)))
 
 if __name__ == '__main__':
