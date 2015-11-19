@@ -29,15 +29,18 @@ cdef class Move:
         self.param = param
         self.score_change = score_change
 
-# absolute or relative path, offset in total bytes / bytes per record, size in total bytes / bytes per record
+# absolute or relative path, offset in total bytes / bytes per record,
+# size in total bytes / bytes per record
 # Location = namedtuple("Location", "path offset size")
 cdef class Location:
     # cdef readonly str path  # moved to .pxd
-    # cdef readonly long offset, size
-    def __init__(self, path, offset, size):
+    # cdef readonly long offset, extra
+    # cdef readonly int in_memory
+    def __init__(self, path, offset, extra, in_memory):
         self.path = path
         self.offset = offset
-        self.size = size
+        self.extra = extra
+        self.in_memory = in_memory
 
 Handle = namedtuple("Handle", "fileobj mmapobj")
 

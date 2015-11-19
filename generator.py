@@ -8,12 +8,12 @@ from diskstorage import Storage
 from utils import State, hands5, expand_deck, winning_probability
 
 
-states_dir = '/home/pastafarianist/mu_roomy_states'
+state_dirs = ['/home/pastafarianist/mu_roomy_states']
 
 
 def main():
     logging.info("Starting.")
-    with Storage(states_dir) as storage:
+    with Storage(state_dirs) as storage:
         for i, hand in enumerate(hands5):
             compact_deck = (1 << 19) - 1
             deck = expand_deck(hand, compact_deck)
