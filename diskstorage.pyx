@@ -93,7 +93,9 @@ cdef class Storage:
     cdef long _get_memory_offset(self, State cstate) except -1:
         cdef long lhand = cstate.hand
         cdef long ldeck = cstate.deck
-        return (cstate.hand << 24) | (cstate.deck)
+        cdef long shand = lhand << 24
+        assert not (shand & ldeck)
+        return shand | ldeck
 
     cdef int _state_is_in_memory(self, State cstate) except -1:
         return cstate.score >= self.first_in_memory
