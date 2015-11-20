@@ -28,7 +28,7 @@ large_report_period = 1000000
 
 cdef class Storage:
     cdef str usage_path, history_path, config_path, curr_path, last_path
-    cdef list state_dirs, path_cache, memory_storage, history
+    cdef list state_dirs, storage_path, memory_storage, history
     cdef bytes curr_value
     cdef dict storage_handles, config
     cdef object storage_usage
