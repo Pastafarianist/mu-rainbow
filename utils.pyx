@@ -178,10 +178,15 @@ def card_combinations(hand):
 # ---------------- Game moves ----------------
 
 def moves_from_hand(hand):
+    # Order matters. The most promising moves should go first.
     hand_as_list = binary_to_list(hand)
+    # Throwing away the least valuable cards first.
+    hand_as_list.sort(key=lambda card: card % 8)
     remove_moves = [Move(0, (1 << i), 0) for i in hand_as_list]
     deal_moves = [Move(1, list_to_binary(combo), score // 10) for score, combo in card_combinations(hand_as_list)]
-    return remove_moves + deal_moves
+    # Dealing the most valuable combinations first.
+    deal_moves.sort(key=lambda move: move.score_change, reverse=True)
+    return deal_moves + remove_moves
 
 def best_move_score(hand):
     hand_as_list = binary_to_list(hand)
@@ -251,14 +256,27 @@ cpdef double winning_probability(State state, storage) except -1.0:
             prob = 0.0
             for move in moves(state):
                 total_prob = 0.0
-                num_outcomes = 0
-                for outcome in outcomes(state, move):
+                curr_outcomes = outcomes(state, move)
+                num_outcomes = len(curr_outcomes)
+                assert num_outcomes > 0
+                for i, outcome in enumerate(curr_outcomes):
                     next_prob = winning_probability(outcome, storage)
                     total_prob += next_prob
-                    num_outcomes += 1
-                assert num_outcomes > 0
-                average_prob = total_prob / num_outcomes
-                prob = max(prob, average_prob)
+
+                    # Optimization: we can estimate the maximum possible winning probability
+                    # for the current pair (state, move) by assuming that all of the remaining
+                    # probabilities are exactly 1.0. There are num_outcomes - i - 1 uncounted
+                    # probabilities (if i==0 and num_outcomes==1, then 1-0-1==0).
+                    # If this number is below the current maximum, there is no point in continuing
+                    # investigating this branch, since it will not be selected as the optimal move
+                    # anyway.
+                    max_possible_prob = (total_prob + 1.0 * (num_outcomes - i - 1)) / num_outcomes
+                    if max_possible_prob < prob:
+                        break
+                else:
+                    # `break` wasn't triggered.
+                    average_prob = total_prob / num_outcomes
+                    prob = max(prob, average_prob)
             storage.store(state, prob)
         else:
             prob = sprob
