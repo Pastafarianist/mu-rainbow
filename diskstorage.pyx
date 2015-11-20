@@ -6,7 +6,7 @@ import datetime, csv
 from collections import Counter
 
 from utils cimport compactify_deck, canonicalize, State, Location
-from utils import hands5_factor_rev, Handle, load, dump
+from utils import hands5_factor_rev, hands5_factor, expand_deck, Handle, load, dump
 
 total_scores = 40
 bytes_per_entry = 2
@@ -19,7 +19,7 @@ usage_memory_key = 'memory'
 config_filename = 'config.json'
 history_filename = 'history.csv'
 
-memory_usage_threshold = 50000000  # should be approximately 3 Gb
+memory_usage_threshold = 40000000  # should be slightly less than 3 Gb
 
 history_report_period = 10000
 small_report_period = 100000
@@ -60,7 +60,7 @@ cdef class Storage:
                 'in_memory': [True] * total_scores
             }
 
-        self.path_cache = [
+        self.storage_path = [
             os.path.join(self.state_dirs[score % len(state_dirs)],
                          '%02d.%s' % (score, 'json' if self.config['in_memory'][score] else 'dat'))
             for score in range(total_scores)
@@ -75,6 +75,7 @@ cdef class Storage:
         # -1 = nothing
         # 0 = writing value
         # 1 = creating file
+        # 2 = transferring data from memory storage to disk
         # I'm missing Haskell's algebraic data types.
         self.curr_action = -1
 
@@ -90,9 +91,6 @@ cdef class Storage:
         # This is the storage for the data that resides in memory.
         self.memory_storage = [None] * total_scores
 
-    cdef _get_path(self, State state):
-        return self.path_cache[state.score]
-
     cdef long _get_offset(self, State cstate) except -1:
         cdef long hand_offset, deck_offset, offset
         hand_offset = hands5_factor_rev[cstate.hand]
@@ -104,19 +102,13 @@ cdef class Storage:
 
         return offset
 
-    cdef long _get_memory_offset(self, State cstate) except -1:
-        cdef long lhand = cstate.hand
-        cdef long ldeck = cstate.deck
-        cdef long shand = lhand << 24
-        assert not (shand & ldeck)
-        return shand | ldeck
-
-    cdef _unpack_offset(self, long offset):
-        cdef long lhand = offset >> 24
-        cdef long ldeck = offset & ((1 << 24) - 1)
-        # TODO: Is this actually useful?
-        cdef int hand = lhand
-        cdef int deck = ldeck
+    cdef _unpack_offset(self, offset):
+        # bottom 19 bits: compactified deck
+        # the rest: hands5_factor index
+        hand_idx = offset >> 19
+        compact_deck = offset & ((1 << 19) - 1)
+        hand = hands5_factor[hand_idx]
+        deck = expand_deck(hand, compact_deck)
         return hand, deck
 
     cdef int _state_is_in_memory(self, State cstate) except -1:
@@ -124,13 +116,13 @@ cdef class Storage:
 
     cdef int _do_prefetch(self, Location loc) except -1:
         # TODO: this is ugly, but is there a better way?
-        return loc.path == self.path_cache[0]
+        return loc.path == self.storage_path[0]
 
     cdef _reset_storage(self, loc):
         # assumes that the path exists but the file doesn't
 
-        file_size = loc.extra * bytes_per_entry
-        logging.info("Creating a new table at %s for %d entries (%d bytes)." % (loc.path, loc.extra, file_size))
+        file_size = loc.size * bytes_per_entry
+        logging.info("Creating a new table at %s for %d entries (%d bytes)." % (loc.path, loc.size, file_size))
 
         self.curr_action = 1
         self.curr_path = loc.path
@@ -152,16 +144,15 @@ cdef class Storage:
 
     cdef _ensure_initialized(self, Location loc):
         if loc.in_memory:
-            idx = loc.extra
-            if self.memory_storage[idx] is None:
+            if self.memory_storage[loc.idx] is None:
                 self._ensure_usable(loc.path)
 
                 if os.path.exists(loc.path):
                     # Loading from on-disk storage
                     with open(loc.path, 'r') as f:
-                        self.memory_storage[idx] = load(f)
+                        self.memory_storage[loc.idx] = {int(key) : value for key, value in load(f).items()}
                 else:
-                    self.memory_storage[idx] = {}
+                    self.memory_storage[loc.idx] = {}
         else:
 
             if loc.path not in self.storage_handles:
@@ -173,7 +164,7 @@ cdef class Storage:
                 assert loc.path not in self.storage_handles
 
                 fileobj = open(loc.path, 'r+b')
-                mmapobj = mmap.mmap(fileobj.fileno(), loc.extra * bytes_per_entry)
+                mmapobj = mmap.mmap(fileobj.fileno(), loc.size * bytes_per_entry)
 
                 self.storage_handles[loc.path] = Handle(fileobj, mmapobj)
 
@@ -183,12 +174,12 @@ cdef class Storage:
                 # According to http://linux.die.net/man/2/posix_fadvise , len=0 (3rd argument)
                 # indicates the intention to access the whole file.
                 if self.last_path is not None:
-                    # logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
+                    logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
                     os.posix_fadvise(self.storage_handles[self.last_path].fileobj.fileno(),
                                      0, 0, os.POSIX_FADV_DONTNEED)
                 else:
-                    # logging.debug("Telling the kernel that %s will be used henceforth..." % loc.path)
-                    pass
+                    logging.debug("Telling the kernel that %s will be used henceforth..." % loc.path)
+                    # pass
                 os.posix_fadvise(self.storage_handles[loc.path].fileobj.fileno(),
                                  0, 0, os.POSIX_FADV_WILLNEED)
                 self.last_path = loc.path
@@ -196,20 +187,16 @@ cdef class Storage:
     cdef Location _get_location(self, State state):
         cdef State cstate
         cdef str path
-        cdef long offset, extra
-        cdef int in_memory
+        cdef long offset, size
+        cdef int in_memory, idx
         cstate = canonicalize(state)
-        path = self._get_path(cstate)
-        if self._state_is_in_memory(cstate):
-            offset = self._get_memory_offset(cstate)
-            extra = cstate.score
-            in_memory = True
-        else:
-            offset = self._get_offset(cstate)
-            # 7448 is the number of hands after factorization
-            extra = 7448 * 2**19
-            in_memory = False
-        return Location(path, offset, extra, in_memory)
+        idx = cstate.score
+        path = self.storage_path[state.score]
+        offset = self._get_offset(cstate)
+        # 7448 is the number of hands after factorization
+        size = 7448 * 2**19
+        in_memory = self._state_is_in_memory(cstate)
+        return Location(idx, path, offset, size, in_memory)
 
     cpdef store(self, state, prob):
         # assuming that prob is a floating-point number in 0..1
@@ -220,9 +207,9 @@ cdef class Storage:
         self._ensure_initialized(loc)
 
         if loc.in_memory:
-            # By this moment, _ensure_initialized has already ensured that memory_storage[loc.extra] is not None.
-            assert loc.offset not in self.memory_storage[loc.extra]
-            self.memory_storage[loc.extra][loc.offset] = prob_int
+            # By this moment, _ensure_initialized has already ensured that memory_storage[loc.idx] is not None.
+            assert loc.offset not in self.memory_storage[loc.idx]
+            self.memory_storage[loc.idx][loc.offset] = prob_int
 
             # Cannot deduplicate this code because down below it is surrounded with a Ctrl+C protector.
             self.storage_usage[loc.path] += 1
@@ -235,8 +222,8 @@ cdef class Storage:
                 heaviest_score = None
                 max_score_usage = 0
                 for score in range(total_scores):
-                    if self.storage_usage[self.path_cache[score]] > max_score_usage:
-                        max_score_usage = self.storage_usage[self.path_cache[score]]
+                    if self.storage_usage[self.storage_path[score]] > max_score_usage:
+                        max_score_usage = self.storage_usage[self.storage_path[score]]
                         heaviest_score = score
                 self._transfer_memory_to_disk(heaviest_score)
         else:
@@ -282,43 +269,50 @@ cdef class Storage:
     cdef _transfer_memory_to_disk(self, score):
         assert bool(self.memory_storage[score])
 
-        # _get_location will return different results based on this value
+        # _get_location will return different results based on this value.
+        # TODO: this is pretty ugly state manipulation. Any way to get rid of it?
         self.config['in_memory'][score] = False
         # TODO: extract '.dat'?
-        json_path = self.path_cache[score]
-        dat_path = os.path.splitext(self.path_cache[score]) + '.dat'
-        self.path_cache[score] = dat_path
+        json_path = self.storage_path[score]
+        dat_path = os.path.splitext(json_path)[0] + '.dat'
+        self.storage_path[score] = dat_path
 
+        # We want to call _ensure_initialized. Hence, we need some Location.
         offset = next(self.memory_storage[score].keys())
         some_hand, some_deck = self._unpack_offset(offset)
         some_state = State(score, some_hand, some_deck)
+
+        # At this moment `loc` already has `in_memory == False` and loc.path points to *.dat
         loc = self._get_location(some_state)
         self._ensure_initialized(loc)
 
-        # TODO: register this value at the top and in the cleanup
         self.curr_path = loc.path
         self.curr_action = 2
 
         for offset, prob_int in self.memory_storage[score].items():
             # Basically, the following code is a lightweight store().
-            hand, deck = self._unpack_offset(offset)
-            state = State(score, hand, deck)
-            loc = self._get_location(state)
+            # Offsets in the memory storage and on the disk are equal.
             # TODO: the following 3 lines are copy-pasted from store(). Maybe extract them?
-            byte_offset = loc.offset * bytes_per_entry
+            byte_offset = offset * bytes_per_entry
             prob_bin = struct.pack(prob_format, prob_int)
-            self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
+            self.storage_handles[dat_path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
 
-        self.storage_usage[usage_memory_key] -= self.storage_usage[json_path]
+        was_using = self.storage_usage[json_path]
+        assert was_using == len(self.memory_storage[score])
+
+        self.storage_usage[usage_memory_key] -= was_using
+        self.storage_usage[dat_path] = was_using
+        del self.storage_usage[json_path]
+        self.memory_storage[score] = None
 
         self.curr_action = -1
         self.curr_path = None
 
     cpdef retrieve_direct_raw(self, loc):
         if loc.in_memory:
-            if self.memory_storage[loc.extra] is None or loc.offset not in self.memory_storage[loc.extra]:
+            if self.memory_storage[loc.idx] is None or loc.offset not in self.memory_storage[loc.idx]:
                 return 0
-            prob_int = self.memory_storage[loc.extra][loc.offset]
+            prob_int = self.memory_storage[loc.idx][loc.offset]
         else:
             if loc.path not in self.storage_handles:
                 if not os.path.exists(loc.path):
@@ -350,16 +344,14 @@ cdef class Storage:
         for idx, blob in enumerate(self.memory_storage):
             if blob is None:
                 continue
-            # TODO: again, breaking into path_cache is probably not a good idea.
-            path = self.path_cache[idx]
+            path = self.storage_path[idx]
             self._ensure_usable(path)
             with open(path, 'w') as f:
                 dump(blob, f)
 
     cdef register_history(self):
         row = [datetime.datetime.now().isoformat(), str(self.storage_usage[usage_total_key])]
-        # TODO: another abuse of path_cache. Maybe it should be legitimate?
-        row.extend(str(self.storage_usage[path]) for path in self.path_cache)
+        row.extend(str(self.storage_usage[path]) for path in self.storage_path)
         self.history.append(row)
 
     cdef report_and_save_stats(self):
@@ -398,6 +390,7 @@ cdef class Storage:
                 os.remove(self.curr_path)
             elif self.curr_action == 2 and self.curr_path is not None and os.path.exists(self.curr_path):
                 logging.info("Removing a half-transferred table at %s." % self.curr_path)
+                # TODO: review this.
                 self.storage_handles[self.curr_path].mmapobj.close()
                 self.storage_handles[self.curr_path].fileobj.close()
                 os.remove(self.curr_path)

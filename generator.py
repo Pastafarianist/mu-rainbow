@@ -8,7 +8,7 @@ from diskstorage import Storage
 from utils import State, hands5, expand_deck, winning_probability
 
 
-state_dirs = ['/home/pastafarianist/mu_roomy_states']
+state_dirs = ['/home/pastafarianist/mu_roomy_states', '/home/pastafarianist/temp/pastafarianist/mu_roomy_states/']
 
 
 def main():

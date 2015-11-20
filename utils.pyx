@@ -33,13 +33,12 @@ cdef class Move:
 # size in total bytes / bytes per record
 # Location = namedtuple("Location", "path offset size")
 cdef class Location:
-    # cdef readonly str path  # moved to .pxd
-    # cdef readonly long offset, extra
-    # cdef readonly int in_memory
-    def __init__(self, path, offset, extra, in_memory):
+    # fields have been moved to .pxd
+    def __init__(self, idx, path, offset, size, in_memory):
+        self.idx = idx
         self.path = path
         self.offset = offset
-        self.extra = extra
+        self.size = size
         self.in_memory = in_memory
 
 Handle = namedtuple("Handle", "fileobj mmapobj")
@@ -277,7 +276,7 @@ def cardset_to_str(hand):
 # ---------------- Persistence and caching ----------------
 
 def dump(obj, f):
-    json.dump(obj, f, separators=(',',':'), sort_keys=True)
+    json.dump(obj, f, separators=(',', ':'), sort_keys=True)
 
 def load(f):
     return json.load(f)
