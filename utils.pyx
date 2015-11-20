@@ -188,7 +188,7 @@ def best_move_score(hand):
     best_score = 0
     for score, _ in card_combinations(hand_as_list):
         best_score = max(best_score, score)
-    return best_score
+    return best_score // 10
 
 cdef moves(State state):
     assert state.deck
