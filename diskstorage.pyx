@@ -208,7 +208,7 @@ cdef class Storage:
 
         if loc.in_memory:
             # By this moment, _ensure_initialized has already ensured that memory_storage[loc.idx] is not None.
-            assert loc.offset not in self.memory_storage[loc.idx]
+            assert loc.offset not in self.memory_storage[loc.idx], (loc.path, loc.offset, prob)
             self.memory_storage[loc.idx][loc.offset] = prob_int
 
             # Cannot deduplicate this code because down below it is surrounded with a Ctrl+C protector.
@@ -310,9 +310,17 @@ cdef class Storage:
 
     cpdef retrieve_direct_raw(self, loc):
         if loc.in_memory:
-            if self.memory_storage[loc.idx] is None or loc.offset not in self.memory_storage[loc.idx]:
+            if self.memory_storage[loc.idx] is None:
+                if not os.path.exists(loc.path):
+                    return 0
+                else:
+                    self._ensure_initialized(loc)
+
+            if loc.offset not in self.memory_storage[loc.idx]:
                 return 0
+
             prob_int = self.memory_storage[loc.idx][loc.offset]
+            assert 1 <= prob_int <= prob_range + 1
         else:
             if loc.path not in self.storage_handles:
                 if not os.path.exists(loc.path):
@@ -326,7 +334,7 @@ cdef class Storage:
 
             prob_int = struct.unpack(prob_format, prob_bin)[0]
 
-        assert 0 <= prob_int <= prob_range + 1
+            assert 0 <= prob_int <= prob_range + 1
 
         return prob_int
 
