@@ -272,7 +272,7 @@ cdef class Storage:
         # _get_location will return different results based on this value.
         # TODO: this is pretty ugly state manipulation. Any way to get rid of it?
         self.config['in_memory'][score] = False
-        # TODO: extract '.dat'?
+        # TODO: extract path manipulation?
         json_path = self.storage_path[score]
         dat_path = os.path.splitext(json_path)[0] + '.dat'
         self.storage_path[score] = dat_path
@@ -316,11 +316,7 @@ cdef class Storage:
                 else:
                     self._ensure_initialized(loc)
 
-            if loc.offset not in self.memory_storage[loc.idx]:
-                return 0
-
-            prob_int = self.memory_storage[loc.idx][loc.offset]
-            assert 1 <= prob_int <= prob_range + 1
+            prob_int = self.memory_storage[loc.idx].get(loc.offset, 0)
         else:
             if loc.path not in self.storage_handles:
                 if not os.path.exists(loc.path):
@@ -334,8 +330,7 @@ cdef class Storage:
 
             prob_int = struct.unpack(prob_format, prob_bin)[0]
 
-            assert 0 <= prob_int <= prob_range + 1
-
+        assert 0 <= prob_int <= prob_range + 1
         return prob_int
 
     cpdef retrieve(self, state):
@@ -375,9 +370,14 @@ cdef class Storage:
         self.history.clear()
 
     cdef report_breakdown(self):
+        special_keys = (usage_memory_key, usage_total_key)
+        report = [(k, v) for (k, v) in self.storage_usage.items() if k not in special_keys]
+        # Cython cannot compile `lambda (key, value)
+        report.sort(key=lambda item: item[1], reverse=True)
+        report.extend((key, self.storage_usage[key]) for key in special_keys)
+        format_str = '    {:>%d}: {:>9}' % max(len(path) for path in self.storage_usage.keys())
         logging.info("Usage breakdown: \n%s" %
-                     '\n'.join('    %s: %d' % (key, value)
-                               for key, value in sorted(self.storage_usage.items())))
+                     '\n'.join(format_str.format(key, value) for key, value in report))
 
     def __enter__(self):
         return self
@@ -414,3 +414,10 @@ cdef class Storage:
 
         self.report_and_save_stats()
         self.report_breakdown()
+
+        # The following assert is dangerous. The code in its current state is not 100% proof against
+        # triggering it. Hence, it would be unwise to move it higher.
+        for score in range(total_scores):
+            expected = self.storage_usage[self.storage_path[score]]
+            actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
+            assert actual == expected, (score, expected, actual)
