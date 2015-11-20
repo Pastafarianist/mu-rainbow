@@ -2,6 +2,7 @@
 
 import os, logging, warnings
 import struct, mmap
+import datetime, csv
 from collections import Counter
 
 from utils cimport compactify_deck, canonicalize, State, Location
@@ -15,20 +16,25 @@ usage_filename = 'usage.json'
 usage_total_key = 'total'
 usage_memory_key = 'memory'
 
+config_filename = 'config.json'
+history_filename = 'history.csv'
+
 memory_usage_threshold = 50000000  # should be approximately 3 Gb
+
+history_report_period = 10000
 small_report_period = 100000
 large_report_period = 1000000
 
 
 cdef class Storage:
-    cdef str usage_path, curr_path, last_path
-    cdef list state_dirs, path_cache, memory_storage
+    cdef str usage_path, history_path, config_path, curr_path, last_path
+    cdef list state_dirs, path_cache, memory_storage, history
     cdef bytes curr_value
-    cdef dict storage_handles
+    cdef dict storage_handles, config
     cdef object storage_usage
-    cdef int curr_action, first_in_memory
+    cdef int curr_action
     cdef long curr_offset
-    def __init__(self, state_dirs, first_in_memory=20):
+    def __init__(self, state_dirs):
         if len(state_dirs) == 1:
             warnings.warn("It is inefficient to use only one storage drive. Add another one.")
 
@@ -45,15 +51,23 @@ cdef class Storage:
         logging.info("Currently using %d entries in the table" % self.storage_usage[usage_total_key])
         self.report_breakdown()
 
-        self.first_in_memory = first_in_memory
+        self.config_path = os.path.join(state_dirs[0], config_filename)
+        if os.path.exists(self.config_path):
+            with open(self.config_path, 'r') as f:
+                self.config = load(f)
+        else:
+            self.config = {
+                'in_memory': [True] * total_scores
+            }
 
         self.path_cache = [
-            os.path.join(self.state_dirs[score % len(state_dirs)], '%02d.dat' % score) for score in range(self.first_in_memory)
-        ] + [
-            os.path.join(self.state_dirs[score % len(state_dirs)], '%02d.json' % score) for score in range(self.first_in_memory, total_scores)
+            os.path.join(self.state_dirs[score % len(state_dirs)],
+                         '%02d.%s' % (score, 'json' if self.config['in_memory'][score] else 'dat'))
+            for score in range(total_scores)
         ]
 
-        assert len(self.path_cache) == total_scores
+        self.history_path = os.path.join(state_dirs[0], history_filename)
+        self.history = []
 
         # In case the generator is aborted, I want to do at least something to preserve consistency.
         # When I/O is performed, this variable stores the current I/O action.
@@ -74,7 +88,7 @@ cdef class Storage:
         self.last_path = None
 
         # This is the storage for the data that resides in memory.
-        self.memory_storage = [None] * (total_scores - self.first_in_memory)
+        self.memory_storage = [None] * total_scores
 
     cdef _get_path(self, State state):
         return self.path_cache[state.score]
@@ -97,8 +111,16 @@ cdef class Storage:
         assert not (shand & ldeck)
         return shand | ldeck
 
+    cdef _unpack_offset(self, long offset):
+        cdef long lhand = offset >> 24
+        cdef long ldeck = offset & ((1 << 24) - 1)
+        # TODO: Is this actually useful?
+        cdef int hand = lhand
+        cdef int deck = ldeck
+        return hand, deck
+
     cdef int _state_is_in_memory(self, State cstate) except -1:
-        return cstate.score >= self.first_in_memory
+        return self.config['in_memory'][cstate.score]
 
     cdef int _do_prefetch(self, Location loc) except -1:
         # TODO: this is ugly, but is there a better way?
@@ -180,7 +202,7 @@ cdef class Storage:
         path = self._get_path(cstate)
         if self._state_is_in_memory(cstate):
             offset = self._get_memory_offset(cstate)
-            extra = cstate.score - self.first_in_memory
+            extra = cstate.score
             in_memory = True
         else:
             offset = self._get_offset(cstate)
@@ -208,7 +230,15 @@ cdef class Storage:
             self.storage_usage[usage_memory_key] += 1
 
             if self.storage_usage[usage_memory_key] >= memory_usage_threshold:
-                raise MemoryError("%d keys in the memory storage are used. Emergency shutdown.")
+                # Need to dump some of the data onto disk and continue.
+                # Cython fails to compile max(key=lambda ...), so
+                heaviest_score = None
+                max_score_usage = 0
+                for score in range(total_scores):
+                    if self.storage_usage[self.path_cache[score]] > max_score_usage:
+                        max_score_usage = self.storage_usage[self.path_cache[score]]
+                        heaviest_score = score
+                self._transfer_memory_to_disk(heaviest_score)
         else:
 
             # No values are supposed to be overwritten, but this assertion is expensive.
@@ -237,11 +267,52 @@ cdef class Storage:
             self.curr_value = None
             self.curr_offset = -1
 
-        if self.storage_usage[usage_total_key] % small_report_period == 0:
-            self.report_and_save_usage()
+        total_used = self.storage_usage[usage_total_key]
 
-        if self.storage_usage[usage_total_key] % large_report_period == 0:
-            self.report_breakdown()
+        # WARNING: this optimization uses the fact that currently all smaller periods divide larger periods.
+        if total_used % history_report_period == 0:
+            self.register_history()
+
+            if total_used % small_report_period == 0:
+                self.report_and_save_stats()
+
+                if total_used % large_report_period == 0:
+                    self.report_breakdown()
+
+    cdef _transfer_memory_to_disk(self, score):
+        assert bool(self.memory_storage[score])
+
+        # _get_location will return different results based on this value
+        self.config['in_memory'][score] = False
+        # TODO: extract '.dat'?
+        json_path = self.path_cache[score]
+        dat_path = os.path.splitext(self.path_cache[score]) + '.dat'
+        self.path_cache[score] = dat_path
+
+        offset = next(self.memory_storage[score].keys())
+        some_hand, some_deck = self._unpack_offset(offset)
+        some_state = State(score, some_hand, some_deck)
+        loc = self._get_location(some_state)
+        self._ensure_initialized(loc)
+
+        # TODO: register this value at the top and in the cleanup
+        self.curr_path = loc.path
+        self.curr_action = 2
+
+        for offset, prob_int in self.memory_storage[score].items():
+            # Basically, the following code is a lightweight store().
+            hand, deck = self._unpack_offset(offset)
+            state = State(score, hand, deck)
+            loc = self._get_location(state)
+            # TODO: the following 3 lines are copy-pasted from store(). Maybe extract them?
+            byte_offset = loc.offset * bytes_per_entry
+            prob_bin = struct.pack(prob_format, prob_int)
+            self.storage_handles[loc.path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
+
+        self.storage_usage[usage_memory_key] -= self.storage_usage[json_path]
+
+        self.curr_action = -1
+        self.curr_path = None
 
     cpdef retrieve_direct_raw(self, loc):
         if loc.in_memory:
@@ -280,16 +351,28 @@ cdef class Storage:
             if blob is None:
                 continue
             # TODO: again, breaking into path_cache is probably not a good idea.
-            path = self.path_cache[idx + self.first_in_memory]
+            path = self.path_cache[idx]
             self._ensure_usable(path)
             with open(path, 'w') as f:
                 dump(blob, f)
 
-    cdef report_and_save_usage(self):
+    cdef register_history(self):
+        row = [datetime.datetime.now().isoformat(), str(self.storage_usage[usage_total_key])]
+        # TODO: another abuse of path_cache. Maybe it should be legitimate?
+        row.extend(str(self.storage_usage[path]) for path in self.path_cache)
+        self.history.append(row)
+
+    cdef report_and_save_stats(self):
         logging.info("Currently using %d entries in the table. %d are in memory."
                      % (self.storage_usage[usage_total_key], self.storage_usage[usage_memory_key]))
+
         with open(self.usage_path, 'w') as f:
             dump(self.storage_usage, f)
+
+        with open(self.history_path, 'a') as f:
+            csvwriter = csv.writer(f)
+            csvwriter.writerows(self.history)
+        self.history.clear()
 
     cdef report_breakdown(self):
         logging.info("Usage breakdown: \n%s" %
@@ -313,6 +396,12 @@ cdef class Storage:
                 # after I set the flag `curr_action`, but before I set the other values or start I/O.
                 logging.info("Removing a half-created table at %s." % self.curr_path)
                 os.remove(self.curr_path)
+            elif self.curr_action == 2 and self.curr_path is not None and os.path.exists(self.curr_path):
+                logging.info("Removing a half-transferred table at %s." % self.curr_path)
+                self.storage_handles[self.curr_path].mmapobj.close()
+                self.storage_handles[self.curr_path].fileobj.close()
+                os.remove(self.curr_path)
+                del self.storage_handles[self.curr_path]
         else:
             logging.info("Generator was interrupted.")
 
@@ -322,5 +411,5 @@ cdef class Storage:
 
         self.save_memory_storage()
 
-        self.report_and_save_usage()
+        self.report_and_save_stats()
         self.report_breakdown()
