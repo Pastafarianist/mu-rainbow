@@ -68,6 +68,7 @@ cdef class Storage:
 
         self.history_path = os.path.join(state_dirs[0], history_filename)
         self.history = []
+        self.register_history()
 
         # In case the generator is aborted, I want to do at least something to preserve consistency.
         # When I/O is performed, this variable stores the current I/O action.
@@ -412,6 +413,7 @@ cdef class Storage:
 
         self.save_memory_storage()
 
+        self.register_history()
         self.report_and_save_stats()
         self.report_breakdown()
 
