@@ -308,6 +308,11 @@ cdef class Storage:
 
         assert bool(self.memory_storage[score]), score
 
+        logging.info("Saving a copy of the latest version of data")
+        self._ensure_usable(self.storage_path[score])
+        with open(self.storage_path[score], 'w') as f:
+            dump(self.memory_storage[score], f)
+
         # _get_location will return different results based on this value.
         # TODO: this is pretty ugly state manipulation. Any way to get rid of it?
         self.config['in_memory'][score] = False
