@@ -381,6 +381,10 @@ cdef class Storage:
         logging.info("Usage breakdown: \n%s" %
                      '\n'.join(format_str.format(key, value) for key, value in report))
 
+    cdef save_config(self):
+        with open(self.config_path, 'w') as f:
+            dump(self.config, f)
+
     def __enter__(self):
         return self
 
@@ -408,10 +412,12 @@ cdef class Storage:
         else:
             logging.info("Generator was interrupted.")
 
+        logging.debug("Closing mmapped files...")
         for handle in self.storage_handles.values():
             handle.mmapobj.close()
             handle.fileobj.close()
 
+        logging.debug("Saving in-memory storage to disk...")
         self.save_memory_storage()
 
         self.register_history('shutdown')
@@ -420,7 +426,9 @@ cdef class Storage:
 
         # The following assert is dangerous. The code in its current state is not 100% proof against
         # triggering it. Hence, it would be unwise to move it higher.
+        logging.debug("Final sanity check...")
         for score in range(total_scores):
             expected = self.storage_usage[self.storage_path[score]]
             actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
             assert actual == expected, (score, expected, actual)
+        logging.debug("Exiting.")
