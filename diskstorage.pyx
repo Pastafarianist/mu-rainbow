@@ -1,12 +1,13 @@
 # cython: profile=True
 
 import os, logging, warnings
-import struct, mmap
+import struct, mmap, platform
 import datetime, csv
 from collections import Counter
 
 from utils cimport compactify_deck, canonicalize, State, Location
 from utils import hands5_factor_rev, hands5_factor, expand_deck, Handle, load, dump
+
 
 total_scores = 40
 bytes_per_entry = 2
@@ -24,6 +25,39 @@ memory_usage_threshold = 40000000  # should be slightly less than 3 Gb
 history_report_period = 10000
 small_report_period = 100000
 large_report_period = 1000000
+
+
+def posix_fallocate(path, size):
+    with open(path, 'wb') as f:
+        os.posix_fallocate(f.fileno(), 0, size)
+
+def win_fallocate(path, size):
+    # I haven't tested this.
+    with open(path, 'wb') as f:
+        f.seek(size - 1)
+        f.write(b'\x00')
+
+def posix_fadvise_willneed(fileno):
+    os.posix_fadvise(fileno, 0, 0, os.POSIX_FADV_WILLNEED)
+
+def posix_fadvise_dontneed(fileno):
+    os.posix_fadvise(fileno, 0, 0, os.POSIX_FADV_DONTNEED)
+
+def win_fadvise_willneed(fileno):
+    pass
+
+def win_fadvise_dontneed(fileno):
+    pass
+
+if platform.system() == 'Linux':
+    fallocate = posix_fallocate
+    fadvise_willneed = posix_fadvise_willneed
+    fadvise_dontneed = posix_fadvise_dontneed
+elif platform.system() == 'Windows':
+    logging.warning("Windows file interaction functions are untested.")
+    fallocate = win_fallocate
+    fadvise_willneed = win_fadvise_willneed
+    fadvise_dontneed = win_fadvise_dontneed
 
 
 cdef class Storage:
@@ -128,8 +162,7 @@ cdef class Storage:
         self.curr_action = 1
         self.curr_path = loc.path
 
-        with open(loc.path, 'wb') as f:
-            os.posix_fallocate(f.fileno(), 0, file_size)
+        fallocate(loc.path, file_size)
 
         self.curr_action = -1
         self.curr_path = None
@@ -177,13 +210,11 @@ cdef class Storage:
                 # indicates the intention to access the whole file.
                 if self.last_path is not None:
                     logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
-                    os.posix_fadvise(self.storage_handles[self.last_path].fileobj.fileno(),
-                                     0, 0, os.POSIX_FADV_DONTNEED)
+                    fadvise_dontneed(self.storage_handles[self.last_path].fileobj.fileno())
                 else:
                     logging.debug("Telling the kernel that %s will be used henceforth..." % loc.path)
                     # pass
-                os.posix_fadvise(self.storage_handles[loc.path].fileobj.fileno(),
-                                 0, 0, os.POSIX_FADV_WILLNEED)
+                fadvise_willneed(self.storage_handles[loc.path].fileobj.fileno())
                 self.last_path = loc.path
 
     cdef Location _get_location(self, State state):
@@ -228,7 +259,7 @@ cdef class Storage:
                 heaviest_score = None
                 max_score_usage = 0
                 for score in range(total_scores):
-                    if self.storage_usage[self.storage_path[score]] > max_score_usage:
+                    if self.config['in_memory'][score] and self.storage_usage[self.storage_path[score]] > max_score_usage:
                         max_score_usage = self.storage_usage[self.storage_path[score]]
                         heaviest_score = score
                 self._transfer_memory_to_disk(heaviest_score)
@@ -275,7 +306,7 @@ cdef class Storage:
     cdef _transfer_memory_to_disk(self, score):
         logging.info("Transferring data for score %d from memory to disk" % score)
 
-        assert bool(self.memory_storage[score])
+        assert bool(self.memory_storage[score]), score
 
         # _get_location will return different results based on this value.
         # TODO: this is pretty ugly state manipulation. Any way to get rid of it?
@@ -323,6 +354,8 @@ cdef class Storage:
         self.curr_action = -1
         self.curr_path = None
         self.curr_offset = -1
+
+        logging.info("Transfer completed.")
 
     cpdef retrieve_direct_raw(self, loc):
         if loc.in_memory:
@@ -387,14 +420,15 @@ cdef class Storage:
         self.history.clear()
 
     cdef report_breakdown(self):
-        special_keys = (usage_memory_key, usage_total_key)
-        report = [(k, v) for (k, v) in self.storage_usage.items() if k not in special_keys]
-        # Cython cannot compile `lambda (key, value)
-        report.sort(key=lambda item: item[1], reverse=True)
-        report.extend((key, self.storage_usage[key]) for key in special_keys)
-        format_str = '    {:>%d}: {:>9}' % max(len(path) for path in self.storage_usage.keys())
-        logging.info("Usage breakdown: \n%s" %
-                     '\n'.join(format_str.format(key, value) for key, value in report))
+        if self.storage_usage:
+            special_keys = (usage_memory_key, usage_total_key)
+            report = [(k, v) for (k, v) in self.storage_usage.items() if k not in special_keys]
+            # Cython cannot compile `lambda (key, value)
+            report.sort(key=lambda item: item[1], reverse=True)
+            report.extend((key, self.storage_usage[key]) for key in special_keys)
+            format_str = '    {:>%d}: {:>9}' % max(len(path) for path in self.storage_usage.keys())
+            logging.info("Usage breakdown: \n%s" %
+                         '\n'.join(format_str.format(key, value) for key, value in report))
 
     cdef save_config(self):
         with open(self.config_path, 'w') as f:
