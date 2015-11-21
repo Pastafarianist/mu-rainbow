@@ -149,6 +149,7 @@ cdef class Storage:
                 self._ensure_usable(loc.path)
 
                 if os.path.exists(loc.path):
+                    logging.debug("Loading %s from disk to memory..." % loc.path)
                     # Loading from on-disk storage
                     with open(loc.path, 'r') as f:
                         self.memory_storage[loc.idx] = {int(key) : value for key, value in load(f).items()}
@@ -217,6 +218,10 @@ cdef class Storage:
             self.storage_usage[usage_total_key] += 1
             self.storage_usage[usage_memory_key] += 1
 
+            # WARNING: The following assert is dangerous. It is NOT guaranteed with the current
+            # implementation that it will never be triggered.
+            assert len(self.memory_storage[loc.idx]) == self.storage_usage[loc.path]
+
             if self.storage_usage[usage_memory_key] >= memory_usage_threshold:
                 # Need to dump some of the data onto disk and continue.
                 # Cython fails to compile max(key=lambda ...), so
@@ -268,6 +273,8 @@ cdef class Storage:
                     self.report_breakdown()
 
     cdef _transfer_memory_to_disk(self, score):
+        logging.info("Transferring data for score %d from memory to disk" % score)
+
         assert bool(self.memory_storage[score])
 
         # _get_location will return different results based on this value.
@@ -278,16 +285,23 @@ cdef class Storage:
         dat_path = os.path.splitext(json_path)[0] + '.dat'
         self.storage_path[score] = dat_path
 
+        logging.debug("Old path: %s" % json_path)
+        logging.debug("New path: %s" % dat_path)
+
         # We want to call _ensure_initialized. Hence, we need some Location.
-        offset = next(self.memory_storage[score].keys())
+        offset = next(iter(self.memory_storage[score].keys()))
         some_hand, some_deck = self._unpack_offset(offset)
         some_state = State(score, some_hand, some_deck)
 
         # At this moment `loc` already has `in_memory == False` and loc.path points to *.dat
         loc = self._get_location(some_state)
+        assert not loc.in_memory
+        assert loc.path == dat_path
+
         self._ensure_initialized(loc)
 
         self.curr_path = loc.path
+        self.curr_offset = loc.idx  # because I don't want to introduce another variable
         self.curr_action = 2
 
         for offset, prob_int in self.memory_storage[score].items():
@@ -299,7 +313,7 @@ cdef class Storage:
             self.storage_handles[dat_path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
 
         was_using = self.storage_usage[json_path]
-        assert was_using == len(self.memory_storage[score])
+        assert was_using == len(self.memory_storage[score]), (was_using, len(self.memory_storage[score]))
 
         self.storage_usage[usage_memory_key] -= was_using
         self.storage_usage[dat_path] = was_using
@@ -308,6 +322,7 @@ cdef class Storage:
 
         self.curr_action = -1
         self.curr_path = None
+        self.curr_offset = -1
 
     cpdef retrieve_direct_raw(self, loc):
         if loc.in_memory:
@@ -404,6 +419,9 @@ cdef class Storage:
                 os.remove(self.curr_path)
             elif self.curr_action == 2 and self.curr_path is not None and os.path.exists(self.curr_path):
                 logging.info("Removing a half-transferred table at %s." % self.curr_path)
+                idx = self.curr_offset
+                self.config['in_memory'] = idx
+                self.storage_path[idx] = os.path.splitext(self.storage_path[idx])[0] + '.json'
                 # TODO: review this.
                 self.storage_handles[self.curr_path].mmapobj.close()
                 self.storage_handles[self.curr_path].fileobj.close()
@@ -420,15 +438,20 @@ cdef class Storage:
         logging.debug("Saving in-memory storage to disk...")
         self.save_memory_storage()
 
+        self.save_config()
+
         self.register_history('shutdown')
         self.report_and_save_stats()
         self.report_breakdown()
 
         # The following assert is dangerous. The code in its current state is not 100% proof against
         # triggering it. Hence, it would be unwise to move it higher.
-        logging.debug("Final sanity check...")
-        for score in range(total_scores):
-            expected = self.storage_usage[self.storage_path[score]]
-            actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
-            assert actual == expected, (score, expected, actual)
+        # Furthermore, if it crashes, it hides the traceback from above.
+
+        #logging.debug("Final sanity check...")
+        #for score in range(total_scores):
+        #    expected = self.storage_usage[self.storage_path[score]]
+        #    actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
+        #    assert actual == expected, (score, expected, actual)
+
         logging.debug("Exiting.")
