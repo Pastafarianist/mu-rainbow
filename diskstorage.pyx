@@ -454,7 +454,7 @@ cdef class Storage:
             elif self.curr_action == 2 and self.curr_path is not None and os.path.exists(self.curr_path):
                 logging.info("Removing a half-transferred table at %s." % self.curr_path)
                 idx = self.curr_offset
-                self.config['in_memory'] = idx
+                self.config['in_memory'][idx] = idx
                 self.storage_path[idx] = os.path.splitext(self.storage_path[idx])[0] + '.json'
                 # TODO: review this.
                 self.storage_handles[self.curr_path].mmapobj.close()
