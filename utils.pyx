@@ -7,7 +7,7 @@ import cython
 # meanings of card numbers:
 # 0-7 = red cards 1-8
 # 8-15 = blue cards 1-8
-# 16-24 = yellow cards 1-8
+# 16-23 = yellow cards 1-8
 
 # ---------------- Datatypes ----------------
 
