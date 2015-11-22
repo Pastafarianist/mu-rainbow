@@ -336,13 +336,17 @@ cdef class Storage:
 
         self._ensure_initialized(loc)
 
+        logging.info("Sorting keys before the transfer...")
+        offsets = sorted(self.memory_storage[score].keys())
+
         logging.info("Writing data in dense format...")
 
         self.curr_path = loc.path
         self.curr_offset = loc.idx  # because I don't want to introduce another variable
         self.curr_action = 2
 
-        for offset, prob_int in self.memory_storage[score].items():
+        for offset in offsets:
+            prob_int = self.memory_storage[score][offset]
             # Basically, the following code is a lightweight store().
             # Offsets in the memory storage and on the disk are equal.
             # TODO: the following 3 lines are copy-pasted from store(). Maybe extract them?
