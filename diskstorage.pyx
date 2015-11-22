@@ -304,11 +304,11 @@ cdef class Storage:
                     self.report_breakdown()
 
     cdef _transfer_memory_to_disk(self, score):
-        logging.info("Transferring data for score %d from memory to disk" % score)
+        logging.info("Transferring data for score %d from memory to disk..." % score)
 
         assert bool(self.memory_storage[score]), score
 
-        logging.info("Saving a copy of the latest version of data")
+        logging.info("Saving a copy of the latest version of data in sparse format...")
         self._ensure_usable(self.storage_path[score])
         with open(self.storage_path[score], 'w') as f:
             dump(self.memory_storage[score], f)
@@ -335,6 +335,8 @@ cdef class Storage:
         assert loc.path == dat_path
 
         self._ensure_initialized(loc)
+
+        logging.info("Writing data in dense format...")
 
         self.curr_path = loc.path
         self.curr_offset = loc.idx  # because I don't want to introduce another variable
@@ -431,7 +433,7 @@ cdef class Storage:
             # Cython cannot compile `lambda (key, value)
             report.sort(key=lambda item: item[1], reverse=True)
             report.extend((key, self.storage_usage[key]) for key in special_keys)
-            format_str = '    {:>%d}: {:>9}' % max(len(path) for path in self.storage_usage.keys())
+            format_str = '    {:>%d}: {:>10}' % max(len(path) for path in self.storage_usage.keys())
             logging.info("Usage breakdown: \n%s" %
                          '\n'.join(format_str.format(key, value) for key, value in report))
 
