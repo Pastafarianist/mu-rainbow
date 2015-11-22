@@ -48,9 +48,8 @@ Handle = namedtuple("Handle", "fileobj mmapobj")
 cdef int num_ones(int n) except -1:
     cdef int res = 0
     while n:
-        if n & 1:
-            res += 1
-        n >>= 1
+        res += 1
+        n = n & (n - 1)
     return res
 
 cdef int list_to_binary(alist) except -1:
