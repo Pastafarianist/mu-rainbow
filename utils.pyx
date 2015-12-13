@@ -235,7 +235,7 @@ cdef outcomes(State state, Move move):
 
 cpdef double winning_probability(State state, storage) except -1.0:
     cdef int score_change, num_outcomes
-    cdef double prob, total_prob, next_prob, average_prob
+    cdef double prob, total_prob, next_prob, average_prob, max_possible_prob
     if state.score >= 40:
         return 1.0
     elif not state.deck:
