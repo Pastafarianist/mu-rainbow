@@ -5,6 +5,7 @@ import struct, mmap, platform
 import datetime, csv
 from collections import Counter
 
+from sparsehash cimport SparseHashMap
 from utils cimport compactify_deck, canonicalize, State, Location
 from utils import hands5_factor_rev, hands5_factor, expand_deck, Handle, load, dump
 
@@ -17,10 +18,13 @@ usage_filename = 'usage.json'
 usage_total_key = 'total'
 usage_memory_key = 'memory'
 
+dense_ext = 'dat'
+sparse_ext = 'shash'
+
 config_filename = 'config.json'
 history_filename = 'history.csv'
 
-memory_usage_threshold = 40000000  # should be slightly less than 3 Gb
+memory_usage_threshold = 700000000
 
 history_report_period = 10000
 small_report_period = 100000
@@ -96,7 +100,7 @@ cdef class Storage:
 
         self.storage_path = [
             os.path.join(self.state_dirs[score % len(state_dirs)],
-                         '%02d.%s' % (score, 'json' if self.config['in_memory'][score] else 'dat'))
+                         '%02d.%s' % (score, sparse_ext if self.config['in_memory'][score] else dense_ext))
             for score in range(total_scores)
         ]
 
@@ -184,10 +188,11 @@ cdef class Storage:
                 if os.path.exists(loc.path):
                     logging.debug("Loading %s from disk to memory..." % loc.path)
                     # Loading from on-disk storage
-                    with open(loc.path, 'r') as f:
-                        self.memory_storage[loc.idx] = {int(key) : value for key, value in load(f).items()}
+                    with open(loc.path, 'rb') as f:
+                        self.memory_storage[loc.idx] = SparseHashMap(f)
+                    assert self.storage_usage[loc.path] == len(self.memory_storage[loc.idx])
                 else:
-                    self.memory_storage[loc.idx] = {}
+                    self.memory_storage[loc.idx] = SparseHashMap()
         else:
 
             if loc.path not in self.storage_handles:
@@ -262,6 +267,10 @@ cdef class Storage:
                     if self.config['in_memory'][score] and self.storage_usage[self.storage_path[score]] > max_score_usage:
                         max_score_usage = self.storage_usage[self.storage_path[score]]
                         heaviest_score = score
+                # TODO: the heaviest score has been calculated, but since I'm using lazy loading,
+                # it may be not initialized. I have to call _ensure_initialized on the respective
+                # storage. This hasn't blown up yet, but it may. I have an assert for that in
+                # _transfer_memory_to_disk, so no data corruption will occur, only a crash.
                 self._transfer_memory_to_disk(heaviest_score)
         else:
 
@@ -310,19 +319,20 @@ cdef class Storage:
 
         logging.info("Saving a copy of the latest version of data in sparse format...")
         self._ensure_usable(self.storage_path[score])
-        with open(self.storage_path[score], 'w') as f:
-            dump(self.memory_storage[score], f)
+
+        with open(self.storage_path[score], 'wb') as f:
+            self.memory_storage[score].save(f)
 
         # _get_location will return different results based on this value.
         # TODO: this is pretty ugly state manipulation. Any way to get rid of it?
         self.config['in_memory'][score] = False
         # TODO: extract path manipulation?
-        json_path = self.storage_path[score]
-        dat_path = os.path.splitext(json_path)[0] + '.dat'
-        self.storage_path[score] = dat_path
+        sparse_path = self.storage_path[score]
+        dense_path = os.path.splitext(sparse_path)[0] + dense_ext
+        self.storage_path[score] = dense_path
 
-        logging.debug("Old path: %s" % json_path)
-        logging.debug("New path: %s" % dat_path)
+        logging.debug("Old path: %s" % sparse_path)
+        logging.debug("New path: %s" % dense_path)
 
         # We want to call _ensure_initialized. Hence, we need some Location.
         offset = next(iter(self.memory_storage[score].keys()))
@@ -332,12 +342,9 @@ cdef class Storage:
         # At this moment `loc` already has `in_memory == False` and loc.path points to *.dat
         loc = self._get_location(some_state)
         assert not loc.in_memory
-        assert loc.path == dat_path
+        assert loc.path == dense_path
 
         self._ensure_initialized(loc)
-
-        logging.info("Sorting keys before the transfer...")
-        offsets = sorted(self.memory_storage[score].keys())
 
         logging.info("Writing data in dense format...")
 
@@ -345,21 +352,21 @@ cdef class Storage:
         self.curr_offset = loc.idx  # because I don't want to introduce another variable
         self.curr_action = 2
 
-        for offset in offsets:
+        for offset in self.memory_storage[score].ordered_keys():
             prob_int = self.memory_storage[score][offset]
             # Basically, the following code is a lightweight store().
             # Offsets in the memory storage and on the disk are equal.
             # TODO: the following 3 lines are copy-pasted from store(). Maybe extract them?
             byte_offset = offset * bytes_per_entry
             prob_bin = struct.pack(prob_format, prob_int)
-            self.storage_handles[dat_path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
+            self.storage_handles[dense_path].mmapobj[byte_offset:byte_offset+bytes_per_entry] = prob_bin
 
-        was_using = self.storage_usage[json_path]
+        was_using = self.storage_usage[sparse_path]
         assert was_using == len(self.memory_storage[score]), (was_using, len(self.memory_storage[score]))
 
         self.storage_usage[usage_memory_key] -= was_using
-        self.storage_usage[dat_path] = was_using
-        del self.storage_usage[json_path]
+        self.storage_usage[dense_path] = was_using
+        del self.storage_usage[sparse_path]
         self.memory_storage[score] = None
 
         self.curr_action = -1
@@ -368,15 +375,20 @@ cdef class Storage:
 
         logging.info("Transfer completed.")
 
-    cpdef retrieve_direct_raw(self, loc):
+    cpdef int retrieve_direct_raw(self, Location loc) except -1:
+        cdef SparseHashMap d
+        cdef int prob_int
         if loc.in_memory:
-            if self.memory_storage[loc.idx] is None:
+            d = self.memory_storage[loc.idx]
+
+            if d is None:
                 if not os.path.exists(loc.path):
                     return 0
                 else:
                     self._ensure_initialized(loc)
-
-            prob_int = self.memory_storage[loc.idx].get(loc.offset, 0)
+                    d = self.memory_storage[loc.idx]
+            
+            prob_int = d.get(loc.offset, 0)
         else:
             if loc.path not in self.storage_handles:
                 if not os.path.exists(loc.path):
@@ -394,8 +406,8 @@ cdef class Storage:
         return prob_int
 
     cpdef retrieve(self, state):
-        loc = self._get_location(state)
-        prob_int = self.retrieve_direct_raw(loc)
+        cdef Location loc = self._get_location(state)
+        cdef int prob_int = self.retrieve_direct_raw(loc)
         # At this point, we're already confident that the value is in the correct range (0..prob_range+1)
 
         if prob_int == 0:
@@ -409,8 +421,9 @@ cdef class Storage:
                 continue
             path = self.storage_path[idx]
             self._ensure_usable(path)
-            with open(path, 'w') as f:
-                dump(blob, f)
+
+            with open(path, 'wb') as f:
+                blob.save(f)
 
     cdef register_history(self, flag='regular'):
         row = [datetime.datetime.now().isoformat(), str(self.storage_usage[usage_total_key])]
@@ -434,7 +447,7 @@ cdef class Storage:
         if self.storage_usage:
             special_keys = (usage_memory_key, usage_total_key)
             report = [(k, v) for (k, v) in self.storage_usage.items() if k not in special_keys]
-            # Cython cannot compile `lambda (key, value)
+            # Support for tuple unpacking from arguments was removed in Python 3.
             report.sort(key=lambda item: item[1], reverse=True)
             report.extend((key, self.storage_usage[key]) for key in special_keys)
             format_str = '    {:>%d}: {:>10}' % max(len(path) for path in self.storage_usage.keys())
@@ -466,7 +479,7 @@ cdef class Storage:
                 logging.info("Removing a half-transferred table at %s." % self.curr_path)
                 idx = self.curr_offset
                 self.config['in_memory'][idx] = idx
-                self.storage_path[idx] = os.path.splitext(self.storage_path[idx])[0] + '.json'
+                self.storage_path[idx] = os.path.splitext(self.storage_path[idx])[0] + sparse_ext
                 # TODO: review this.
                 self.storage_handles[self.curr_path].mmapobj.close()
                 self.storage_handles[self.curr_path].fileobj.close()
