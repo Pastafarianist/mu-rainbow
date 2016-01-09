@@ -24,11 +24,12 @@ sparse_ext = 'shash'
 config_filename = 'config.json'
 history_filename = 'history.csv'
 
-memory_usage_threshold = 700000000
+memory_usage_threshold = 701000000
 
 history_report_period = 10000
 small_report_period = 100000
 large_report_period = 1000000
+save_period = 50000000
 
 
 def posix_fallocate(path, size):
@@ -312,6 +313,9 @@ cdef class Storage:
                 if total_used % large_report_period == 0:
                     self.report_breakdown()
 
+                    if total_used % save_period == 0:
+                        self.save_memory_storage()
+
     cdef _transfer_memory_to_disk(self, score):
         logging.info("Transferring data for score %d from memory to disk..." % score)
 
@@ -416,14 +420,20 @@ cdef class Storage:
             return (prob_int - 1) / prob_range
 
     cdef save_memory_storage(self):
+        logging.debug("Saving in-memory storage to disk...")
         for idx, blob in enumerate(self.memory_storage):
             if blob is None:
                 continue
             path = self.storage_path[idx]
             self._ensure_usable(path)
 
-            with open(path, 'wb') as f:
+            temp_path = path + '.tmp'
+
+            with open(temp_path, 'wb') as f:
                 blob.save(f)
+
+            os.rename(temp_path, path)
+        logging.debug("Done.")
 
     cdef register_history(self, flag='regular'):
         row = [datetime.datetime.now().isoformat(), str(self.storage_usage[usage_total_key])]
@@ -493,7 +503,6 @@ cdef class Storage:
             handle.mmapobj.close()
             handle.fileobj.close()
 
-        logging.debug("Saving in-memory storage to disk...")
         self.save_memory_storage()
 
         self.save_config()
