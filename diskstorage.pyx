@@ -87,9 +87,6 @@ cdef class Storage:
         else:
             self.storage_usage = Counter()
 
-        logging.info("Currently using %d entries in the table" % self.storage_usage[usage_total_key])
-        self.report_breakdown()
-
         self.config_path = os.path.join(state_dirs[0], config_filename)
         if os.path.exists(self.config_path):
             with open(self.config_path, 'r') as f:
@@ -130,6 +127,9 @@ cdef class Storage:
 
         # This is the storage for the data that resides in memory.
         self.memory_storage = [None] * total_scores
+
+        logging.info("Currently using %d entries in the table" % self.storage_usage[usage_total_key])
+        self.report_breakdown()
 
     cdef long _get_offset(self, State cstate) except -1:
         cdef long hand_offset, deck_offset, offset
@@ -468,15 +468,22 @@ cdef class Storage:
         self.history.clear()
 
     cdef report_breakdown(self):
+        def path_initialized(path):
+            return (
+                (self.memory_storage[self.storage_path.index(path)] is not None) or
+                (path in self.storage_handles)
+            )
+
         if self.storage_usage:
             special_keys = (usage_memory_key, usage_total_key)
-            report = [(k, v) for (k, v) in self.storage_usage.items() if k not in special_keys]
-            # Support for tuple unpacking from arguments was removed in Python 3.
+            report = [(path, usage, '*' if path_initialized(path) else '')
+                      for (path, usage) in self.storage_usage.items() if path not in special_keys]
+            # Support for tuple unpacking in function arguments was removed in Python 3.
             report.sort(key=lambda item: item[1], reverse=True)
-            report.extend((key, self.storage_usage[key]) for key in special_keys)
-            format_str = '    {:>%d}: {:>10}' % max(len(path) for path in self.storage_usage.keys())
+            report.extend((key, self.storage_usage[key], '') for key in special_keys)
+            format_str = '    {:>%d}: {:>11} {}' % max(len(path) for path in self.storage_usage.keys())
             logging.info("Usage breakdown: \n%s" %
-                         '\n'.join(format_str.format(key, value) for key, value in report))
+                         '\n'.join(format_str.format(path, usage, initialized) for path, usage, initialized in report))
 
     cdef save_config(self):
         with open(self.config_path, 'w') as f:
@@ -529,10 +536,14 @@ cdef class Storage:
         # triggering it. Hence, it would be unwise to move it higher.
         # Furthermore, if it crashes, it hides the traceback from above.
 
-        #logging.debug("Final sanity check...")
-        #for score in range(total_scores):
-        #    expected = self.storage_usage[self.storage_path[score]]
-        #    actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
-        #    assert actual == expected, (score, expected, actual)
+        logging.debug("Final sanity check...")
+        for score in range(total_scores):
+            expected = self.storage_usage[self.storage_path[score]]
+            actual = len(self.memory_storage[score]) if self.memory_storage[score] is not None else 0
+            if actual != expected:
+                # Cannot assert here. Otherwise, a traceback from this
+                # assertion could hide a crash from above.
+                logging.error("Storage %d is expected to contain %d elements, but actually has %d!" % (score, expected, actual))
+                # assert actual == expected, (score, expected, actual)
 
         logging.debug("Exiting.")
