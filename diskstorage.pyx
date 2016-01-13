@@ -419,21 +419,35 @@ cdef class Storage:
         else:
             return (prob_int - 1) / prob_range
 
-    cdef save_memory_storage(self):
-        logging.debug("Saving in-memory storage to disk...")
-        for idx, blob in enumerate(self.memory_storage):
-            if blob is None:
-                continue
-            path = self.storage_path[idx]
-            self._ensure_usable(path)
+    cdef save_memory_storage(self, do_unload=False):
+        logging.info("Saving in-memory storage to disk...")
 
-            temp_path = path + '.tmp'
+        to_save = [
+            (
+                idx,
+                # cannot put `blob` here because I want to free
+                # memory in the first loop
+                self.storage_path[idx],
+                self.storage_path[idx] + '.tmp',
+            ) for idx, blob in enumerate(self.memory_storage)
+            if blob is not None
+        ]
 
-            with open(temp_path, 'wb') as f:
-                blob.save(f)
+        for idx, path, temp_path in to_save:
+            logging.debug("Saving storage %d to %s..." % (idx, temp_path))
 
+            self._ensure_usable(temp_path)
+            self.memory_storage[idx].save(temp_path)
+
+            if do_unload:
+                self.memory_storage[idx] = None
+
+        logging.debug("Overwriting previous dumps with new data...")
+
+        for idx, path, temp_path in to_save:
             os.rename(temp_path, path)
-        logging.debug("Done.")
+
+        logging.info("Done.")
 
     cdef register_history(self, flag='regular'):
         row = [datetime.datetime.now().isoformat(), str(self.storage_usage[usage_total_key])]
@@ -503,7 +517,7 @@ cdef class Storage:
             handle.mmapobj.close()
             handle.fileobj.close()
 
-        self.save_memory_storage()
+        self.save_memory_storage(do_unload=True)
 
         self.save_config()
 
