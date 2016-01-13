@@ -191,7 +191,29 @@ cdef class Storage:
                     # Loading from on-disk storage
                     with open(loc.path, 'rb') as f:
                         self.memory_storage[loc.idx] = SparseHashMap(f)
-                    assert self.storage_usage[loc.path] == len(self.memory_storage[loc.idx])
+                    # TODO: can I make it look better?
+                    recorded_usage = self.storage_usage[loc.path]
+                    actual_usage = len(self.memory_storage[loc.idx])
+                    if (
+                            (self.config.get('fix_usage', False) is True) and
+                            (recorded_usage != actual_usage)
+                        ):
+                        new_total = sum(value for key, value in self.storage_usage if key not in (usage_total_key, usage_memory_key))
+                        new_memory = sum(value for key, value in self.storage_usage if key not in (usage_total_key, usage_memory_key) and self.config['in_memory'][self.storage_path.index(key)])
+
+                        logging.warning("Fixing usage of %s. Own: %d->%d (%d). Total: %d->%d (%d). Memory: %d->%d (%d)." %
+                            (
+                                loc.path, recorded_usage, actual_usage, actual_usage - recorded_usage,
+                                self.storage_usage[usage_total_key], new_total, new_total - self.storage_usage[usage_total_key],
+                                self.storage_usage[usage_memory_key], new_memory, new_memory - self.storage_usage[usage_memory_key]
+                            )
+                        )
+
+                        self.storage_usage[loc.path] = actual_usage
+                        self.storage_usage[usage_total_key] = new_total
+                        self.storage_usage[usage_memory_key] = new_memory
+                    else:
+                        assert recorded_usage == actual_usage
                 else:
                     self.memory_storage[loc.idx] = SparseHashMap()
         else:
