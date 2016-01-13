@@ -9,7 +9,6 @@ from sparsehash cimport SparseHashMap
 from utils cimport compactify_deck, canonicalize, State, Location
 from utils import hands5_factor_rev, hands5_factor, expand_deck, Handle, load, dump
 
-
 total_scores = 40
 bytes_per_entry = 2
 prob_format = '>H'
@@ -31,7 +30,6 @@ small_report_period = 100000
 large_report_period = 1000000
 save_period = 50000000
 
-
 def posix_fallocate(path, size):
     with open(path, 'wb') as f:
         os.posix_fallocate(f.fileno(), 0, size)
@@ -43,6 +41,10 @@ def win_fallocate(path, size):
         f.write(b'\x00')
 
 def posix_fadvise_willneed(fileno):
+    # os.posix_fadvise tells the kernel to prefetch the whole file in memory.
+    # API reference: https://docs.python.org/3/library/os.html#os.posix_fadvise
+    # According to http://linux.die.net/man/2/posix_fadvise , len=0 (3rd argument)
+    # indicates the intention to access the whole file.
     os.posix_fadvise(fileno, 0, 0, os.POSIX_FADV_WILLNEED)
 
 def posix_fadvise_dontneed(fileno):
@@ -63,7 +65,6 @@ elif platform.system() == 'Windows':
     fallocate = win_fallocate
     fadvise_willneed = win_fadvise_willneed
     fadvise_dontneed = win_fadvise_dontneed
-
 
 cdef class Storage:
     cdef str usage_path, history_path, config_path, curr_path, last_path
@@ -232,10 +233,6 @@ cdef class Storage:
                 self.storage_handles[loc.path] = Handle(fileobj, mmapobj)
 
             if loc.path != self.last_path and self._do_prefetch(loc):
-                # os.posix_fadvise tells the kernel to prefetch the whole file in memory.
-                # API reference: https://docs.python.org/3/library/os.html#os.posix_fadvise
-                # According to http://linux.die.net/man/2/posix_fadvise , len=0 (3rd argument)
-                # indicates the intention to access the whole file.
                 if self.last_path is not None:
                     logging.debug("Telling the kernel that %s will be used instead of %s..." % (loc.path, self.last_path))
                     fadvise_dontneed(self.storage_handles[self.last_path].fileobj.fileno())
@@ -413,7 +410,7 @@ cdef class Storage:
                 else:
                     self._ensure_initialized(loc)
                     d = self.memory_storage[loc.idx]
-            
+
             prob_int = d.get(loc.offset, 0)
         else:
             if loc.path not in self.storage_handles:
